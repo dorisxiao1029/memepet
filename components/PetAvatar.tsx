@@ -8,6 +8,7 @@ interface Props {
   mood: Mood;
   level: number;
   xp: number;
+  levelUpFlash?: boolean;
 }
 
 const moodColors: Record<Mood, string> = {
@@ -17,42 +18,57 @@ const moodColors: Record<Mood, string> = {
   skeptical: "bg-violet-500",
 };
 
-const moodLabels: Record<Mood, string> = {
-  happy: "happy",
-  neutral: "neutral",
-  disappointed: "disappointed",
-  skeptical: "skeptical",
+const moodEmoji: Record<Mood, string> = {
+  happy: "😄",
+  neutral: "😐",
+  disappointed: "😔",
+  skeptical: "🤨",
 };
 
-export default function PetAvatar({ emoji, name, mood, level, xp }: Props) {
+export default function PetAvatar({ emoji, name, mood, level, xp, levelUpFlash }: Props) {
   const xpInLevel = xp % 100;
-  const xpPercent = xpInLevel;
 
   return (
-    <div className="flex flex-col items-center gap-3 p-4">
-      {/* Emoji avatar */}
-      <div className="text-6xl leading-none select-none">{emoji}</div>
-
-      {/* Name + mood */}
-      <div className="text-center">
-        <div className="text-white font-semibold text-lg">{name}</div>
-        <div className="flex items-center gap-1.5 justify-center mt-1">
-          <div className={`w-2 h-2 rounded-full ${moodColors[mood]}`} />
-          <span className="text-gray-400 text-xs">{moodLabels[mood]}</span>
+    <div className="flex items-center gap-3">
+      {/* Emoji avatar with mood ring */}
+      <div className="relative">
+        <div
+          className={`text-4xl leading-none select-none transition-transform duration-300 ${
+            levelUpFlash ? "scale-125" : "scale-100"
+          }`}
+        >
+          {emoji}
+        </div>
+        {/* Mood indicator */}
+        <div className="absolute -bottom-1 -right-1 text-sm leading-none">
+          {moodEmoji[mood]}
         </div>
       </div>
 
-      {/* Level + XP bar */}
-      <div className="w-full max-w-[160px] space-y-1">
-        <div className="flex justify-between text-xs text-gray-500">
-          <span>Level {level}</span>
-          <span>{xpInLevel}/100 XP</span>
+      {/* Name + level + XP bar */}
+      <div className="flex flex-col gap-1 min-w-[120px]">
+        <div className="flex items-center gap-2">
+          <span className="text-white font-semibold text-sm">{name}</span>
+          <span
+            className={`text-xs font-bold px-1.5 py-0.5 rounded-md transition-colors ${
+              levelUpFlash
+                ? "bg-yellow-400 text-black animate-pulse"
+                : "bg-violet-800 text-violet-300"
+            }`}
+          >
+            Lv.{level}
+          </span>
         </div>
-        <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-violet-500 rounded-full transition-all duration-500"
-            style={{ width: `${xpPercent}%` }}
-          />
+        <div className="space-y-0.5">
+          <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden w-[120px]">
+            <div
+              className={`h-full rounded-full transition-all duration-700 ${
+                levelUpFlash ? "bg-yellow-400" : "bg-violet-500"
+              }`}
+              style={{ width: `${xpInLevel}%` }}
+            />
+          </div>
+          <div className="text-gray-600 text-[10px]">{xpInLevel}/100 XP</div>
         </div>
       </div>
     </div>
