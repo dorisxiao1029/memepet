@@ -30,7 +30,8 @@ export function createInitialState(
   personality: string,
   emoji: string,
   mood: Mood,
-  goalTexts: string[]
+  goalTexts: string[],
+  lang: "en" | "zh" = "en"
 ): PetState {
   const goals: Goal[] = goalTexts.map((text) => ({
     id: nanoid(),
@@ -45,9 +46,10 @@ export function createInitialState(
     personality,
     emoji,
     mood,
-    xp: 75, // start at 75 so judges see a level-up in ~2 interactions
+    xp: 75,
     level: 1,
     goals,
+    lang,
     conversationHistory: [],
     onboardedAt: Date.now(),
     lastInteractionAt: Date.now(),

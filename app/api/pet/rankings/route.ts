@@ -6,55 +6,52 @@ export interface RankingToken {
   name: string;
   symbol: string;
   address: string;
-  priceUsd: number;
-  volume24h: number;
-  marketCap: number;
-  priceChange24h: number;
+  price: number;
+  cap: number;        // market cap in BNB
+  day1Increase: number; // 24h % change
+  day1Vol: number;    // 24h volume in USD
   holders: number;
-  image?: string;
+  img?: string;
+  progress: number;   // bonding curve progress 0-100
 }
 
 export async function GET() {
   try {
     const res = await fetch(FOUR_MEME_API, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ type: "HOT", pageSize: 5 }),
-      next: { revalidate: 60 }, // cache 60s
+      next: { revalidate: 60 },
     });
 
-    if (!res.ok) {
-      throw new Error(`four.meme API ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`four.meme API ${res.status}`);
 
     const data = await res.json();
-    // four.meme returns { code, data: { list: [...] } }
-    const list = data?.data?.list ?? data?.data ?? [];
+    // data.data is a flat array
+    const list: Record<string, unknown>[] = Array.isArray(data?.data) ? data.data : [];
 
-    const tokens: RankingToken[] = list.slice(0, 5).map((t: Record<string, unknown>) => ({
-      name: (t.name as string) ?? "Unknown",
-      symbol: (t.symbol as string) ?? "???",
-      address: (t.address as string) ?? "",
-      priceUsd: parseFloat((t.priceUsd as string) ?? "0") || 0,
-      volume24h: parseFloat((t.volume24h as string) ?? "0") || 0,
-      marketCap: parseFloat((t.marketCap as string) ?? "0") || 0,
-      priceChange24h: parseFloat((t.priceChange24h as string) ?? "0") || 0,
-      holders: parseInt((t.holders as string) ?? "0") || 0,
-      image: (t.image as string) ?? undefined,
+    const tokens: RankingToken[] = list.slice(0, 5).map((t) => ({
+      name: String(t.name ?? "Unknown"),
+      symbol: String(t.symbol ?? "???"),
+      address: String(t.tokenAddress ?? ""),
+      price: parseFloat(String(t.price ?? "0")),
+      cap: parseFloat(String(t.cap ?? "0")),
+      day1Increase: parseFloat(String(t.day1Increase ?? "0")),
+      day1Vol: parseFloat(String(t.day1Vol ?? "0")),
+      holders: parseInt(String(t.hold ?? "0")),
+      img: t.img ? String(t.img) : undefined,
+      progress: parseFloat(String(t.progress ?? "0")),
     }));
 
     return NextResponse.json({ tokens });
   } catch (err) {
     console.error("[rankings]", err);
-    // Return mock data so demo never breaks
+    // Fallback mock so demo never breaks
     return NextResponse.json({
       tokens: [
-        { name: "相信相信的力量", symbol: "HOPE", address: "", priceUsd: 0.0000042, volume24h: 128000, marketCap: 42000, priceChange24h: 88.5, holders: 312 },
-        { name: "PEPE2 BSC", symbol: "PEPE2", address: "", priceUsd: 0.000001, volume24h: 95000, marketCap: 31000, priceChange24h: -12.3, holders: 891 },
-        { name: "四季豆", symbol: "BEAN", address: "", priceUsd: 0.0000008, volume24h: 67000, marketCap: 18000, priceChange24h: 210.0, holders: 145 },
+        { name: "相信相信的力量", symbol: "HOPE", address: "", price: 0.000000033, cap: 33.5, day1Increase: 488.5, day1Vol: 298273, holders: 312, progress: 72 },
+        { name: "忽略FUD", symbol: "FUD", address: "", price: 0.0000000117, cap: 11.7, day1Increase: 103.8, day1Vol: 179738, holders: 82, progress: 41 },
+        { name: "PEPE2 BSC", symbol: "PEPE2", address: "", price: 0.000000008, cap: 8.1, day1Increase: -12.3, day1Vol: 67000, holders: 145, progress: 28 },
       ],
     });
   }

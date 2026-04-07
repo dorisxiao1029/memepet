@@ -50,6 +50,12 @@ export interface PetState {
   // Conversation (rolling window, max 20)
   conversationHistory: Message[];
 
+  // Language preference
+  lang: "en" | "zh";
+
+  // On-chain identity
+  agentId?: number;
+
   // Metadata
   onboardedAt: number;
   lastInteractionAt: number;
