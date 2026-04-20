@@ -817,7 +817,7 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
           <span className="ticker-pill">DNA <span className="ticker-up">{dna?.tradingStyle?.toUpperCase() ?? "MEME"}</span></span>
           <span className="ticker-pill">MOOD <span className="ticker-hot">{petState.mood.toUpperCase()}</span></span>
           <span className="ticker-pill">MEME <span className="ticker-up">{liveMeme}/100</span></span>
-          <span className="hidden sm:inline text-white/30">{zh ? "先认识它，再进入交易驾驶舱。" : "Meet the pet first, then enter the cockpit."}</span>
+          <span className="hidden sm:inline text-white/30">{zh ? "宠物已上线，触发交易脉冲看它实时反应。" : "Pet is live. Trigger trade pulses and watch it react."}</span>
         </div>
 
         <main className="flex-1 px-5 sm:px-7 py-7">
