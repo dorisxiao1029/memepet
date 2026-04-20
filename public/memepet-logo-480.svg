@@ -1,0 +1,67 @@
+<svg width="480" height="480" viewBox="0 0 480 480" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">MemePet Logo</title>
+  <desc id="desc">A neon on-chain meme trading pet logo with a pet orb, paw, and trading candle motif.</desc>
+  <defs>
+    <linearGradient id="bg" x1="44" y1="32" x2="444" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#080A18"/>
+      <stop offset="0.45" stop-color="#11172D"/>
+      <stop offset="1" stop-color="#061E1A"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="122" y1="112" x2="362" y2="352" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF00AA"/>
+      <stop offset="0.48" stop-color="#B65CFF"/>
+      <stop offset="1" stop-color="#00FFAA"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(236 236) rotate(90) scale(210)">
+      <stop offset="0" stop-color="#FF00AA" stop-opacity="0.62"/>
+      <stop offset="0.55" stop-color="#00FFAA" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#00FFAA" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-80" y="-80" width="640" height="640" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0.3 0 1 0 0 1 0 0 1 0 0.7 0 0 0 0.8 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+  </defs>
+
+  <rect width="480" height="480" rx="108" fill="url(#bg)"/>
+  <rect x="18" y="18" width="444" height="444" rx="92" stroke="url(#orb)" stroke-opacity="0.42" stroke-width="2"/>
+  <circle cx="240" cy="240" r="210" fill="url(#glow)"/>
+
+  <g opacity="0.16">
+    <path d="M72 142H408" stroke="white" stroke-width="1"/>
+    <path d="M72 198H408" stroke="white" stroke-width="1"/>
+    <path d="M72 254H408" stroke="white" stroke-width="1"/>
+    <path d="M72 310H408" stroke="white" stroke-width="1"/>
+    <path d="M128 86V394" stroke="white" stroke-width="1"/>
+    <path d="M184 86V394" stroke="white" stroke-width="1"/>
+    <path d="M240 86V394" stroke="white" stroke-width="1"/>
+    <path d="M296 86V394" stroke="white" stroke-width="1"/>
+    <path d="M352 86V394" stroke="white" stroke-width="1"/>
+  </g>
+
+  <g filter="url(#softGlow)">
+    <rect x="116" y="94" width="248" height="248" rx="64" fill="url(#orb)"/>
+    <rect x="134" y="112" width="212" height="212" rx="50" fill="#0A0F21" fill-opacity="0.78"/>
+
+    <path d="M160 294C194 236 290 236 322 294" stroke="#00FFAA" stroke-width="18" stroke-linecap="round"/>
+    <circle cx="194" cy="204" r="29" fill="#FFE9F7"/>
+    <circle cx="286" cy="204" r="29" fill="#FFE9F7"/>
+    <ellipse cx="240" cy="245" rx="66" ry="58" fill="#FFE9F7"/>
+    <circle cx="218" cy="239" r="9" fill="#0A0F21"/>
+    <circle cx="262" cy="239" r="9" fill="#0A0F21"/>
+    <path d="M226 271C236 279 248 279 258 271" stroke="#0A0F21" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="207" cy="260" r="8" fill="#FF7BD2" fill-opacity="0.8"/>
+    <circle cx="273" cy="260" r="8" fill="#FF7BD2" fill-opacity="0.8"/>
+
+    <path d="M169 151V112" stroke="#00FFAA" stroke-width="10" stroke-linecap="round"/>
+    <path d="M169 129H196" stroke="#00FFAA" stroke-width="10" stroke-linecap="round"/>
+    <path d="M311 151V101" stroke="#FFD166" stroke-width="10" stroke-linecap="round"/>
+    <path d="M311 126H282" stroke="#FFD166" stroke-width="10" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <rect x="140" y="356" width="200" height="54" rx="27" fill="#050812" fill-opacity="0.74" stroke="#00FFAA" stroke-opacity="0.35"/>
+    <text x="240" y="391" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="900" letter-spacing="1.5" fill="#FFFFFF">MemePet</text>
+  </g>
+</svg>
