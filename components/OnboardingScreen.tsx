@@ -8,6 +8,7 @@ import type { PetState } from "@/lib/types";
 
 interface Props {
   onComplete: (state: PetState) => void;
+  initialPrompt?: string;
 }
 
 type EggColor = "pink" | "blue";
@@ -96,15 +97,32 @@ function EggSVG({ color, phase }: { color: EggColor; phase: Phase }) {
   );
 }
 
-export default function OnboardingScreen({ onComplete }: Props) {
+const HATCH_STEPS_EN = [
+  "Parsing your description...",
+  "Sculpting appearance...",
+  "Injecting personality & goals...",
+  "Preparing on-chain identity...",
+];
+const HATCH_STEPS_ZH = [
+  "解析自然语言...",
+  "生成外观...",
+  "注入性格与目标...",
+  "准备上链身份...",
+];
+
+const PARTICLES = ["✨", "⭐", "💫", "🌟", "🔥", "💎", "🚀", "🐾"];
+
+export default function OnboardingScreen({ onComplete, initialPrompt }: Props) {
   const [lang, setLang] = useState<Lang>("en");
   const [eggColor, setEggColor] = useState<EggColor>("pink");
   const [petName, setPetName] = useState("");
-  const [selectedPersonality, setSelectedPersonality] = useState(0); // index into presets
-  const [customPersonality, setCustomPersonality] = useState("");
+  // If a prefill was passed from landing, auto-select Custom personality and pre-fill it
+  const [selectedPersonality, setSelectedPersonality] = useState(initialPrompt ? 3 : 0);
+  const [customPersonality, setCustomPersonality] = useState(initialPrompt ?? "");
   const [selectedGoals, setSelectedGoals] = useState<Set<number>>(new Set());
   const [customGoal, setCustomGoal] = useState("");
   const [phase, setPhase] = useState<Phase>("form");
+  const [hatchStep, setHatchStep] = useState(0);
   const [error, setError] = useState("");
 
   const t = T[lang];
@@ -135,6 +153,12 @@ export default function OnboardingScreen({ onComplete }: Props) {
     if (!personalityValue.trim()) { setError(t.errorPersonality); return; }
     setError("");
     setPhase("hatching");
+    setHatchStep(0);
+
+    // Advance through visual steps while API runs in parallel
+    const stepTimers = [600, 1300, 2100].map((ms, i) =>
+      setTimeout(() => setHatchStep(i + 1), ms)
+    );
 
     try {
       const response = await onboardPet({
@@ -142,11 +166,15 @@ export default function OnboardingScreen({ onComplete }: Props) {
         goals: activeGoals,
       });
 
+      stepTimers.forEach(clearTimeout);
+      setHatchStep(3); // all steps done
+      await delay(400);
+
       // Trigger crack animation
       setPhase("cracking");
       await delay(1200);
       setPhase("done");
-      await delay(800);
+      await delay(900);
 
       const { pet } = response;
       const finalState = createInitialState(
@@ -156,6 +184,7 @@ export default function OnboardingScreen({ onComplete }: Props) {
         pet.mood,
         activeGoals,
         lang,
+        pet.memeStyle,
       );
 
       onComplete({
@@ -168,6 +197,7 @@ export default function OnboardingScreen({ onComplete }: Props) {
         }],
       });
     } catch {
+      stepTimers.forEach(clearTimeout);
       setError(t.errorFailed);
       setPhase("form");
     }
@@ -175,33 +205,100 @@ export default function OnboardingScreen({ onComplete }: Props) {
 
   // --- Hatching / cracking screens ---
   if (phase === "hatching" || phase === "cracking" || phase === "done") {
+    const steps = lang === "zh" ? HATCH_STEPS_ZH : HATCH_STEPS_EN;
+    const isDark = eggColor === "pink"
+      ? { from: "#2d0a1e", via: "#1a0830", glow: "#FF00AA" }
+      : { from: "#0a1e2d", via: "#081430", glow: "#00AAFF" };
+
     return (
-      <div className="min-h-screen bg-gradient-to-br from-pink-50 via-purple-50 to-blue-50 flex flex-col items-center justify-center gap-6 p-6">
-        <div className={`w-36 h-44 transition-all duration-300
-          ${phase === "cracking" ? "scale-110" : ""}
-          ${phase === "done" ? "scale-125" : ""}
+      <div
+        className="min-h-screen flex flex-col items-center justify-center overflow-hidden relative"
+        style={{ background: `linear-gradient(135deg, ${isDark.from}, ${isDark.via}, #0D0D1A)` }}
+      >
+        {/* Floating particles */}
+        {PARTICLES.map((p, i) => (
+          <span
+            key={i}
+            className="absolute text-lg pointer-events-none select-none"
+            style={{
+              left: `${8 + (i * 12) % 90}%`,
+              bottom: `${10 + (i * 13) % 60}%`,
+              animation: `particle-rise ${2.5 + (i % 3) * 0.8}s ${(i * 0.4) % 2}s ease-out infinite`,
+              opacity: 0.6,
+            }}
+          >
+            {p}
+          </span>
+        ))}
+
+        {/* Glow orb behind egg */}
+        <div
+          className="absolute w-64 h-64 rounded-full blur-3xl opacity-25 pointer-events-none"
+          style={{ background: isDark.glow }}
+        />
+
+        {/* Egg */}
+        <div className={`relative z-10 transition-all duration-500
+          ${phase === "cracking" ? "scale-125" : ""}
+          ${phase === "done" ? "scale-140" : ""}
           ${phase === "hatching" ? "egg-float" : ""}`}
+          style={{ width: 160, height: 200 }}
         >
           <EggSVG color={eggColor} phase={phase} />
         </div>
 
-        <div className="text-center space-y-1">
-          <p className="text-xl font-black text-gray-700">
-            {phase === "hatching" && `${t.hatching} ${petName}...`}
-            {phase === "cracking" && "💥 Cracking..."}
-            {phase === "done" && "🎉 Hatched!"}
+        {/* Text */}
+        <div className="text-center mt-6 mb-2 z-10 relative">
+          <p className="text-2xl font-black text-white">
+            {phase === "hatching" && (lang === "zh" ? `正在孵化 ${petName}...` : `Hatching ${petName}...`)}
+            {phase === "cracking" && (lang === "zh" ? "💥 破壳而出！" : "💥 Breaking free!")}
+            {phase === "done" && (lang === "zh" ? "🎉 诞生了！" : "🎉 Born!")}
           </p>
-          <p className="text-sm text-gray-400 font-medium">{t.hatchingSub}</p>
+          <p className="text-sm mt-1" style={{ color: "rgba(255,255,255,0.45)" }}>
+            {lang === "zh" ? "你的 Trading Pet 正在破壳..." : "Your Trading Pet is emerging..."}
+          </p>
         </div>
 
-        <div className="flex gap-1.5">
-          {[0, 1, 2].map((i) => (
+        {/* 4-step progress bar */}
+        <div className="z-10 relative w-full max-w-xs px-6 mt-6 space-y-2.5">
+          {steps.map((label, i) => {
+            const done = i <= hatchStep;
+            const active = i === hatchStep + 1;
+            return (
+              <div key={i} className="flex items-center gap-3">
+                <div
+                  className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 transition-all duration-300
+                    ${done ? "step-pop" : ""}`}
+                  style={{
+                    background: done ? isDark.glow : "rgba(255,255,255,0.1)",
+                    color: done ? "#fff" : "rgba(255,255,255,0.3)",
+                    border: active ? `2px solid ${isDark.glow}` : "none",
+                  }}
+                >
+                  {done ? "✓" : i + 1}
+                </div>
+                <span
+                  className="text-xs font-semibold transition-all duration-300"
+                  style={{ color: done ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.3)" }}
+                >
+                  {label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Progress line */}
+        <div className="z-10 relative w-full max-w-xs px-6 mt-5">
+          <div className="h-1 w-full rounded-full" style={{ background: "rgba(255,255,255,0.1)" }}>
             <div
-              key={i}
-              className={`w-2 h-2 rounded-full animate-bounce ${cfg.dot}`}
-              style={{ animationDelay: `${i * 150}ms` }}
+              className="h-full rounded-full transition-all duration-700"
+              style={{
+                width: `${Math.min(100, (hatchStep + 1) * 25)}%`,
+                background: `linear-gradient(90deg, ${isDark.glow}, ${eggColor === "pink" ? "#A78BFA" : "#00FFAA"})`,
+              }}
             />
-          ))}
+          </div>
         </div>
       </div>
     );

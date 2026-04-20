@@ -26,7 +26,7 @@ export default function WalletConnect({ onConnected, walletAddress }: Props) {
     try {
       const summary = await analyzeWallet({ walletAddress: address });
       onConnected(address, summary);
-    } catch (err) {
+    } catch {
       setError("Could not analyze wallet. Check the address and try again.");
     } finally {
       setAnalyzing(false);

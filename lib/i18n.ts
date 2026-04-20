@@ -5,7 +5,7 @@ export const T = {
     // Onboarding
     heroTitle: "Hatch Your Crypto",
     heroTitleHighlight: "Trading Pet",
-    heroSub: "It reads your wallet, watches your trades, and holds you accountable 🚀",
+    heroSub: "It reads your wallet, watches your trades, and grows with every on-chain move 🚀",
     pickEgg: "Choose Your Egg",
     pinkEggLabel: "Pink Egg 🌸",
     pinkEggSub: "Warm & Cute",
@@ -39,8 +39,8 @@ export const T = {
       "Hold any token for at least 2 weeks",
       "No panic selling — stick to my plan",
       "Only buy coins I've researched",
-      "Stop chasing pumps",
-      "Set stop-loss before every trade",
+      "Review pumps before aping in",
+      "Write down my exit plan before every trade",
     ],
 
     // Chat
@@ -64,7 +64,7 @@ export const T = {
   zh: {
     heroTitle: "孵化你的专属",
     heroTitleHighlight: "Meme Trading Pet",
-    heroSub: "它读你的链上记录，陪你看盘，帮你戒掉 FOMO 🚀",
+    heroSub: "它读你的链上记录，陪你看盘，并随着每次交易一起成长 🚀",
     pickEgg: "选择你的宠物蛋",
     pinkEggLabel: "粉色蛋 🌸",
     pinkEggSub: "温柔可爱型",
@@ -96,7 +96,7 @@ export const T = {
       "持仓超过2周，不恐慌卖出",
       "不追高，不买没研究过的币",
       "每次交易前设置止损",
-      "不在深夜冲动买币",
+      "深夜打狗前先复盘一遍",
       "每天只看一次行情",
     ],
 

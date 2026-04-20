@@ -9,13 +9,13 @@ const groq = createGroq({ apiKey: process.env.GROQ_API_KEY });
 export async function POST(req: NextRequest) {
   try {
     const body: ChatRequest = await req.json();
-    const { message, petState, goals, conversationHistory, walletSummary } = body;
+    const { message, petState, goals, conversationHistory, walletSummary, newsContext } = body;
 
     if (!message?.trim()) {
       return NextResponse.json({ error: "message is required" }, { status: 400 });
     }
 
-    const systemPrompt = buildSystemPrompt(petState, goals, walletSummary);
+    const systemPrompt = buildSystemPrompt(petState, goals, walletSummary, newsContext);
 
     const messages = [
       ...conversationHistory.slice(-20).map((m) => ({

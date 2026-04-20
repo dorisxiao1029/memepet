@@ -5,7 +5,7 @@ import type { XpRequest, XpResponse } from "@/lib/types";
 export async function POST(req: NextRequest) {
   try {
     const body: XpRequest = await req.json();
-    const { event, goalId } = body;
+    const { event } = body;
 
     const xpDelta = calcXpDelta(event);
 

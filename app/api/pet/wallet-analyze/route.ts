@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { WalletAnalyzeRequest, WalletSummary } from "@/lib/types";
+import type { FomoScore, PetArchetype, TradingDNA, TradingStyle, WalletAnalyzeRequest, WalletSummary } from "@/lib/types";
 
 // four.meme exchange proxy on BNB Chain
 const FOUR_MEME_FACTORIES = [
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.MORALIS_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "MORALIS_API_KEY not configured" }, { status: 500 });
+      return NextResponse.json(buildQuietWalletSummary(walletAddress));
     }
 
     const headers = { "X-API-Key": apiKey };
@@ -168,6 +168,25 @@ export async function POST(req: NextRequest) {
       parts.push(`total four.meme trades: ${fourMemeTxs.length}`);
     }
 
+    const totalBuys = tokenTxs.filter(
+      (tx) => tx.to_address?.toLowerCase() === walletAddress.toLowerCase()
+    ).length;
+    const totalSells = tokenTxs.filter(
+      (tx) => tx.from_address?.toLowerCase() === walletAddress.toLowerCase()
+    ).length;
+    const tradingDNA = buildTradingDNA({
+      avgHoldDays,
+      fomoScore,
+      fomoSignalDays,
+      totalBuys,
+      totalSells,
+      totalFourMemeTrades: fourMemeTxs.length,
+      hasBigOutflow: Boolean(biggestLoss),
+      hasTokenHistory: tokenTxs.length > 0,
+    });
+
+    parts.push(`Trading DNA: ${tradingDNA.headline}`);
+
     const summary =
       parts.length > 0
         ? `Wallet: ${parts.join(". ")}.`
@@ -180,6 +199,7 @@ export async function POST(req: NextRequest) {
       biggestLoss,
       lastFourMemeTrade,
       totalFourMemeTrades: fourMemeTxs.length,
+      tradingDNA,
     };
 
     return NextResponse.json(result);
@@ -187,4 +207,145 @@ export async function POST(req: NextRequest) {
     console.error("[wallet-analyze]", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
+}
+
+function buildQuietWalletSummary(walletAddress: string): WalletSummary {
+  const tradingDNA = buildTradingDNA({
+    avgHoldDays: 0,
+    fomoScore: "LOW",
+    fomoSignalDays: 0,
+    totalBuys: 0,
+    totalSells: 0,
+    totalFourMemeTrades: 0,
+    hasBigOutflow: false,
+    hasTokenHistory: false,
+  });
+
+  return {
+    summary: `Wallet connected (${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}). No significant trading history found. Trading DNA: ${tradingDNA.headline}.`,
+    avgHoldDays: 0,
+    fomoScore: "LOW",
+    biggestLoss: null,
+    lastFourMemeTrade: null,
+    totalFourMemeTrades: 0,
+    tradingDNA,
+  };
+}
+
+function buildTradingDNA(input: {
+  avgHoldDays: number;
+  fomoScore: FomoScore;
+  fomoSignalDays: number;
+  totalBuys: number;
+  totalSells: number;
+  totalFourMemeTrades: number;
+  hasBigOutflow: boolean;
+  hasTokenHistory: boolean;
+}): TradingDNA {
+  const tradingStyle = inferTradingStyle(input);
+  const petArchetype = inferPetArchetype(tradingStyle, input.fomoScore, input.hasBigOutflow);
+  const tags = buildDnaTags(tradingStyle, input);
+
+  return {
+    tradingStyle,
+    petArchetype,
+    tags,
+    headline: buildHeadline(tradingStyle, petArchetype),
+    vibe: buildVibe(tradingStyle, petArchetype),
+    initialVitals: {
+      energy: clamp(
+        58 + input.totalBuys * 3 + (input.fomoScore === "HIGH" ? 18 : input.fomoScore === "MEDIUM" ? 10 : 0),
+        45,
+        96
+      ),
+      satiety: clamp(
+        86 - input.fomoSignalDays * 12 - Math.max(0, input.totalBuys - input.totalSells) * 2,
+        38,
+        92
+      ),
+      memeScore: clamp(
+        18 + input.totalFourMemeTrades * 14 + (input.hasTokenHistory ? 12 : 0) + (input.fomoScore === "HIGH" ? 16 : 0),
+        8,
+        98
+      ),
+    },
+  };
+}
+
+function inferTradingStyle(input: {
+  avgHoldDays: number;
+  fomoScore: FomoScore;
+  totalBuys: number;
+  totalSells: number;
+  hasBigOutflow: boolean;
+  hasTokenHistory: boolean;
+}): TradingStyle {
+  if (!input.hasTokenHistory) return "quiet";
+  if (input.avgHoldDays >= 14) return "holder";
+  if (input.fomoScore === "HIGH" || input.totalBuys >= 8) return "degen";
+  if (input.avgHoldDays > 0 && input.avgHoldDays <= 2 && input.totalSells >= 2) return "scalper";
+  if (input.hasBigOutflow) return "recovering";
+  return "quiet";
+}
+
+function inferPetArchetype(
+  style: TradingStyle,
+  fomoScore: FomoScore,
+  hasBigOutflow: boolean
+): PetArchetype {
+  if (style === "holder") return "calm";
+  if (style === "recovering" || hasBigOutflow) return "comfort";
+  if (style === "degen") return "hype";
+  if (fomoScore === "MEDIUM") return "roast";
+  return "calm";
+}
+
+function buildDnaTags(style: TradingStyle, input: {
+  fomoScore: FomoScore;
+  totalBuys: number;
+  totalFourMemeTrades: number;
+  hasBigOutflow: boolean;
+}): string[] {
+  const tags: string[] = [];
+
+  if (style === "degen") tags.push("Meme Hunter", "Fast Paws");
+  if (style === "holder") tags.push("Diamond Paws", "Calm Rider");
+  if (style === "scalper") tags.push("Quick Claws", "Chart Sprinter");
+  if (style === "recovering") tags.push("Dip Survivor", "Needs Hugs");
+  if (style === "quiet") tags.push("Baby Wallet", "Fresh Companion");
+  if (input.fomoScore === "HIGH") tags.push("High Energy");
+  if (input.totalFourMemeTrades > 0) tags.push("four.meme Native");
+  if (input.totalBuys >= 5) tags.push("Active Trader");
+  if (input.hasBigOutflow) tags.push("Battle Tested");
+
+  return Array.from(new Set(tags)).slice(0, 5);
+}
+
+function buildHeadline(style: TradingStyle, archetype: PetArchetype): string {
+  const styleLabel: Record<TradingStyle, string> = {
+    degen: "High-energy meme hunter",
+    holder: "Diamond-paw holder",
+    scalper: "Fast-claw market sprinter",
+    quiet: "Fresh wallet companion",
+    recovering: "Battle-tested recovery buddy",
+  };
+  const archetypeLabel: Record<PetArchetype, string> = {
+    hype: "hype pet",
+    comfort: "comfort pet",
+    roast: "playful roast pet",
+    calm: "calm co-pilot",
+  };
+  return `${styleLabel[style]} with a ${archetypeLabel[archetype]} soul`;
+}
+
+function buildVibe(style: TradingStyle, archetype: PetArchetype): string {
+  if (archetype === "comfort") return "celebrates green candles loudly and stays soft when red candles hit";
+  if (style === "degen") return "loves the thrill of meme trading and turns every on-chain move into pet energy";
+  if (style === "holder") return "keeps the desk calm, proud, and patient while positions breathe";
+  if (style === "scalper") return "reacts quickly, cheers tiny wins, and keeps the tempo playful";
+  return "starts gentle, learns from every trade, and grows with the wallet";
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
 }

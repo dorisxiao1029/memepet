@@ -1,7 +1,10 @@
-export type Mood = "happy" | "neutral" | "disappointed" | "skeptical";
+export type Mood   = "happy" | "neutral" | "disappointed" | "skeptical";
+export type Gender = "male" | "female" | "non-binary" | "mystery";
 export type GoalStatus = "active" | "hit" | "missed" | "abandoned";
 export type FomoScore = "LOW" | "MEDIUM" | "HIGH";
 export type Reaction = "reality-check" | "encouragement" | "neutral";
+export type TradingStyle = "degen" | "holder" | "scalper" | "quiet" | "recovering";
+export type PetArchetype = "hype" | "comfort" | "roast" | "calm";
 
 export interface Goal {
   id: string;
@@ -26,6 +29,20 @@ export interface WalletSummary {
   biggestLoss: { token: string; percent: number; date: string } | null;
   lastFourMemeTrade: { token: string; action: "buy" | "sell"; date: string } | null;
   totalFourMemeTrades: number;
+  tradingDNA: TradingDNA;
+}
+
+export interface TradingDNA {
+  tradingStyle: TradingStyle;
+  petArchetype: PetArchetype;
+  headline: string;
+  vibe: string;
+  tags: string[];
+  initialVitals: {
+    energy: number;
+    satiety: number;
+    memeScore: number;
+  };
 }
 
 export interface PetState {
@@ -33,11 +50,21 @@ export interface PetState {
   name: string;
   personality: string;
   emoji: string;
+  memeStyle?: string; // e.g. "毒舌" | "暖心" | "狂喜" | "冷静"
+
+  // Identity extras (set at onboarding)
+  gender?: Gender;
+  personalityTags?: string[];   // e.g. ["ENFP", "💎 Diamond Hands", "⚡ Aggressive"]
 
   // Dynamic state
   mood: Mood;
   xp: number;
   level: number;
+
+  // Tamagotchi vitals (0-100, decay over time)
+  energy: number;    // 精力 — decays 10/4h, restored by interaction
+  satiety: number;   // 饱食度 — decays 15/4h, restored by feeding/checkin
+  memeScore: number; // Meme指数 — only accumulates, rises with meme discussions
 
   // Goals
   goals: Goal[];
@@ -46,6 +73,7 @@ export interface PetState {
   walletAddress?: string;
   walletSummary?: string;
   walletAnalyzedAt?: number;
+  tradingDNA?: TradingDNA;
 
   // Conversation (rolling window, max 20)
   conversationHistory: Message[];
@@ -66,6 +94,8 @@ export interface PetState {
 export interface OnboardRequest {
   description: string;
   goals: string[];
+  gender?: Gender;
+  personalityTags?: string[];
 }
 
 export interface OnboardResponse {
@@ -75,6 +105,7 @@ export interface OnboardResponse {
     emoji: string;
     mood: Mood;
     greeting: string;
+    memeStyle?: string;
   };
 }
 
@@ -84,6 +115,7 @@ export interface ChatRequest {
   goals: Goal[];
   conversationHistory: Message[];
   walletSummary?: string;
+  newsContext?: string;  // Live market intelligence from 6551 MCP
 }
 
 export interface ChatResponse {

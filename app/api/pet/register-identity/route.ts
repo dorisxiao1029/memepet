@@ -70,7 +70,7 @@ function buildAgentURI(name: string, image: string, description: string): string
   const payload = {
     type: REGISTRATION_TYPE,
     name,
-    description: description || "I am a four.meme AI trading accountability companion.",
+    description: description || "I am a four.meme AI trading pet that reacts to wallet behavior and grows with every BSC meme trade.",
     image,
     active: true,
     supportedTrust: [""],

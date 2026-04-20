@@ -12,6 +12,7 @@ interface Props {
   petState: PetState;
   onStateUpdate: (state: PetState) => void;
   onReset: () => void;
+  initialMessage?: string;
 }
 
 interface RankingToken {
@@ -24,7 +25,7 @@ interface RankingToken {
   progress: number;
 }
 
-export default function ChatScreen({ petState, onStateUpdate, onReset }: Props) {
+export default function ChatScreen({ petState, onStateUpdate, onReset, initialMessage }: Props) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [levelUpFlash, setLevelUpFlash] = useState(false);
@@ -34,6 +35,7 @@ export default function ChatScreen({ petState, onStateUpdate, onReset }: Props) 
   const [showMintModal, setShowMintModal] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const didAutoSend = useRef(false);
 
   const lang = petState.lang ?? "en";
   const t = T[lang];
@@ -42,6 +44,15 @@ export default function ChatScreen({ petState, onStateUpdate, onReset }: Props) 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [petState.conversationHistory]);
+
+  // Auto-send initial message from reveal screen (e.g. "Today's Trading Companion")
+  useEffect(() => {
+    if (initialMessage && !didAutoSend.current) {
+      didAutoSend.current = true;
+      setTimeout(() => sendMessage(initialMessage), 300);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const sendMessage = useCallback(async (text?: string) => {
     const msg = (text ?? input).trim();
@@ -229,6 +240,13 @@ export default function ChatScreen({ petState, onStateUpdate, onReset }: Props) 
           eggColor={eggColor}
         />
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          {/* Meme style badge */}
+          {petState.memeStyle && (
+            <div className="text-xs px-2 py-1 rounded-full font-bold border"
+              style={{ background: "rgba(255,0,170,0.1)", color: "#FF00AA", borderColor: "rgba(255,0,170,0.25)" }}>
+              {petState.memeStyle}
+            </div>
+          )}
           {/* On-chain badge */}
           {petState.agentId != null && (
             <div className="text-xs px-2 py-1 bg-violet-100 text-violet-600 rounded-full font-bold border border-violet-200">

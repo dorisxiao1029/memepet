@@ -3,6 +3,18 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --meme-pink: #FF00AA;
+  --meme-green: #00FFAA;
+  --meme-purple: #A78BFA;
+  --meme-dark: #0D0D1A;
+  --meme-ink: #060812;
+  --meme-panel: rgba(13, 18, 34, 0.82);
+  --meme-panel-strong: rgba(17, 24, 44, 0.94);
+  --meme-line: rgba(255, 255, 255, 0.1);
+  --meme-muted: rgba(238, 245, 255, 0.52);
+  --meme-warn: #FFD166;
+  --meme-red: #FF5C7A;
+  --meme-cyan: #00D4FF;
 }
 
 @theme inline {
@@ -14,12 +26,172 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-nunito), 'Nunito', Arial, sans-serif;
+  font-family: var(--font-nunito, 'Nunito'), 'Space Grotesk', 'IBM Plex Sans', 'Nunito', sans-serif;
 }
 
 .font-nunito {
-  font-family: var(--font-nunito), 'Nunito', Arial, sans-serif;
+  font-family: var(--font-nunito, 'Nunito'), 'Space Grotesk', 'IBM Plex Sans', 'Nunito', sans-serif;
 }
+
+.font-signal {
+  font-family: 'IBM Plex Mono', 'Space Mono', 'SFMono-Regular', Consolas, monospace;
+}
+
+.trader-shell {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 16% 12%, rgba(255, 0, 170, 0.2), transparent 28rem),
+    radial-gradient(circle at 86% 14%, rgba(0, 255, 170, 0.16), transparent 25rem),
+    radial-gradient(circle at 48% 82%, rgba(0, 212, 255, 0.11), transparent 30rem),
+    linear-gradient(135deg, #060812 0%, #0b1020 44%, #080816 100%);
+}
+
+.trader-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -2;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at center, black, transparent 78%);
+}
+
+.trader-shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background:
+    linear-gradient(120deg, transparent 0%, rgba(255,255,255,0.04) 48%, transparent 52%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 5px);
+  opacity: 0.42;
+}
+
+.trader-nav {
+  background: rgba(6, 8, 18, 0.78);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 16px 60px rgba(0, 0, 0, 0.28);
+}
+
+.trader-card {
+  position: relative;
+  background:
+    linear-gradient(145deg, rgba(18, 25, 48, 0.94), rgba(9, 12, 24, 0.92)),
+    radial-gradient(circle at top left, rgba(255, 0, 170, 0.12), transparent 18rem);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.trader-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(120deg, rgba(255,255,255,0.12), transparent 32%, transparent 68%, rgba(0,255,170,0.08));
+  opacity: 0.55;
+}
+
+.trader-terminal {
+  background:
+    linear-gradient(180deg, rgba(3, 7, 18, 0.82), rgba(3, 7, 18, 0.96)),
+    radial-gradient(circle at top right, rgba(0, 255, 170, 0.12), transparent 18rem);
+  border: 1px solid rgba(0, 255, 170, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035), 0 20px 80px rgba(0,0,0,0.34);
+}
+
+.trader-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(238, 245, 255, 0.66);
+  font-weight: 800;
+}
+
+.trader-chip-hot {
+  border-color: rgba(255, 0, 170, 0.35);
+  background: rgba(255, 0, 170, 0.12);
+  color: #ff7bd2;
+}
+
+.trader-chip-green {
+  border-color: rgba(0, 255, 170, 0.28);
+  background: rgba(0, 255, 170, 0.1);
+  color: #00ffaa;
+}
+
+.trader-action {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.trader-action::after {
+  content: "";
+  position: absolute;
+  inset: auto -20% -55% -20%;
+  height: 70%;
+  background: radial-gradient(circle, rgba(255,255,255,0.12), transparent 70%);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.trader-action:hover::after { opacity: 1; }
+
+.market-tape {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  overflow: hidden;
+  border-block: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(3, 7, 18, 0.54);
+  color: rgba(238, 245, 255, 0.58);
+  backdrop-filter: blur(14px);
+}
+
+.ticker-pill {
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.075);
+}
+
+.ticker-up { color: var(--meme-green); }
+.ticker-hot { color: var(--meme-warn); }
+.ticker-down { color: var(--meme-red); }
+
+.pet-orb {
+  background:
+    radial-gradient(circle at 38% 25%, rgba(255,255,255,0.2), transparent 18%),
+    linear-gradient(145deg, rgba(25, 18, 48, 0.98), rgba(6, 10, 22, 0.98));
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.08) inset,
+    0 0 70px rgba(255, 0, 170, 0.26),
+    0 28px 90px rgba(0,0,0,0.45);
+}
+
+.signal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.signal-row:last-child { border-bottom: 0; }
 
 /* Egg wobble animation */
 @keyframes wobble {
@@ -62,3 +234,42 @@ body {
 /* Hide scrollbar but keep scroll */
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Confetti fall */
+@keyframes confetti-fall {
+  0%   { transform: translateY(-20px) rotate(0deg);   opacity: 1; }
+  100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
+}
+
+/* Pet breathing */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50%       { transform: scale(1.04); }
+}
+.pet-breathe { animation: breathe 3s ease-in-out infinite; }
+
+/* Particle float up */
+@keyframes particle-rise {
+  0%   { transform: translateY(0) scale(1); opacity: 0.8; }
+  100% { transform: translateY(-120px) scale(0.4); opacity: 0; }
+}
+
+/* Step check pop */
+@keyframes step-pop {
+  0%   { transform: scale(0.5); opacity: 0; }
+  60%  { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+.step-pop { animation: step-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+/* Pulsing glow for "Start Petting" CTA */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 50px var(--glow, rgba(255,0,170,0.5)), 0 0 100px var(--glow2, rgba(255,0,170,0.2)); }
+  50%       { box-shadow: 0 0 70px var(--glow, rgba(255,0,170,0.7)), 0 0 130px var(--glow2, rgba(255,0,170,0.3)); }
+}
+
+/* Scale up for done egg */
+@keyframes scale-140 {
+  to { transform: scale(1.4); }
+}
+.scale-140 { animation: scale-140 0.3s ease forwards; }

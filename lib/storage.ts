@@ -1,8 +1,12 @@
 import { nanoid } from "nanoid";
-import type { PetState, Goal, Message, Mood } from "./types";
+import type { PetState, Goal, Message, Mood, TradingDNA } from "./types";
 
 const STORAGE_KEY = "petState";
 const MAX_HISTORY = 20;
+
+// Vitals decay rates (per hour)
+const ENERGY_DECAY_PER_HOUR  = 2.5;   // full drain in 40h; -10 per 4h
+const SATIETY_DECAY_PER_HOUR = 3.75;  // full drain in 27h; -15 per 4h
 
 export function loadPetState(): PetState | null {
   if (typeof window === "undefined") return null;
@@ -31,7 +35,11 @@ export function createInitialState(
   emoji: string,
   mood: Mood,
   goalTexts: string[],
-  lang: "en" | "zh" = "en"
+  lang: "en" | "zh" = "en",
+  memeStyle?: string,
+  gender?: import("./types").Gender,
+  personalityTags?: string[],
+  tradingDNA?: TradingDNA,
 ): PetState {
   const goals: Goal[] = goalTexts.map((text) => ({
     id: nanoid(),
@@ -46,24 +54,56 @@ export function createInitialState(
     personality,
     emoji,
     mood,
-    xp: 75,
+    memeStyle,
+    gender,
+    personalityTags,
+    xp: 0,
     level: 1,
+    // Start vitals at 90 — a little room to feed right away
+    energy: tradingDNA?.initialVitals.energy ?? 90,
+    satiety: tradingDNA?.initialVitals.satiety ?? 90,
+    memeScore: tradingDNA?.initialVitals.memeScore ?? 0,
     goals,
     lang,
+    tradingDNA,
     conversationHistory: [],
     onboardedAt: Date.now(),
     lastInteractionAt: Date.now(),
   };
 }
 
+/** Apply time-based vitals decay since lastInteractionAt. */
+export function applyTimeDecay(state: PetState): PetState {
+  const hours = Math.max(0, (Date.now() - state.lastInteractionAt) / 3_600_000);
+  return {
+    ...state,
+    energy:  Math.max(0, (state.energy  ?? 90) - hours * ENERGY_DECAY_PER_HOUR),
+    satiety: Math.max(0, (state.satiety ?? 90) - hours * SATIETY_DECAY_PER_HOUR),
+  };
+}
+
+/** Restore vitals after interaction — call after every meaningful event. */
+export function feedPet(
+  state: PetState,
+  delta: { energy?: number; satiety?: number; memeScore?: number }
+): PetState {
+  return {
+    ...state,
+    energy:    Math.min(100, (state.energy    ?? 0) + (delta.energy    ?? 0)),
+    satiety:   Math.min(100, (state.satiety   ?? 0) + (delta.satiety   ?? 0)),
+    memeScore: Math.min(100, (state.memeScore ?? 0) + (delta.memeScore ?? 0)),
+  };
+}
+
 export function appendMessage(state: PetState, message: Message): PetState {
   const history = [...state.conversationHistory, message];
-  // Keep last MAX_HISTORY messages
-  const trimmed =
-    history.length > MAX_HISTORY
-      ? history.slice(history.length - MAX_HISTORY)
-      : history;
-
+  let trimmed = history;
+  if (history.length > MAX_HISTORY) {
+    // Always keep index 0 (the pet's opening greeting) so it's never lost
+    const greeting = history[0];
+    const rest = history.slice(history.length - (MAX_HISTORY - 1));
+    trimmed = [greeting, ...rest];
+  }
   return {
     ...state,
     conversationHistory: trimmed,
