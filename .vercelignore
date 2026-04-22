@@ -1,0 +1,7 @@
+ai-pet-desktop/
+node_modules/
+*.mp4
+*.mp3
+components/PetPark.tsx
+components/PetPlayground.tsx.bak
+docs/
