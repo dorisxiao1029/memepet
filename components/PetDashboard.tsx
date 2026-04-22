@@ -1,10 +1,19 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useAccount, useChainId, useSwitchChain, useWriteContract, usePublicClient } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { type Address, parseEther } from "viem";
 import { chatWithPet } from "@/lib/pet-client";
 import { appendMessage, applyXp, calcXpDelta, feedPet } from "@/lib/storage";
+import { TM2_BUY_ABI, TM2_SELL_MIN_ABI, ERC20_ABI, BSC_CHAIN_ID, MAX_BUY_WEI } from "@/lib/fourmeme";
 import type { PetState, Message, Mood, Reaction, WalletSummary } from "@/lib/types";
 import WalletConnect from "./WalletConnect";
+import PetPlayground from "./PetPlayground";
+import PetRank from "./PetRank";
+import NavBar from "./NavBar";
+import VRMViewer from "./VRMViewer";
+import { USER_PET_VRM } from "@/lib/vrm-assignments";
 
 interface Props {
   petState: PetState;
@@ -33,6 +42,41 @@ interface MarketSnack {
   sentiment: NewsContext["sentiment"];
   sentimentScore: number;
   newsTitle?: string;
+}
+
+type TradeStatus = "idle" | "picking" | "quoting" | "awaiting-signature" | "approving" | "broadcasting" | "confirming" | "success" | "fail";
+
+interface AgentAction {
+  id: string;
+  timestamp: number;
+  tool: string;              // e.g. "four.meme.rankings", "Helper3.tryBuy", "TokenManager2.buyTokenAMAP"
+  summary: string;           // human-friendly line ("Picked $AINY (+12% 24h)")
+  txHash?: string;
+  status?: "ok" | "error" | "pending";
+}
+
+interface TradeRecommendation {
+  address: string;
+  name: string;
+  symbol: string;
+  img?: string;
+  price: number;
+  day1Increase: number;
+  day1Vol: number;
+  holders: number;
+  progress: number;
+  reason: string;
+  reasonZh: string;
+}
+
+interface TradeResult {
+  action: "buy" | "sell";
+  txHash: string;
+  bscScanUrl: string;
+  symbol: string;
+  fundsBnb?: number;
+  estimatedTokens?: number;
+  status: "success" | "reverted" | "pending";
 }
 
 type TradePulseKind = "buy" | "profit" | "loss" | "exit";
@@ -249,10 +293,38 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
   const [showShareCard, setShowShareCard] = useState(false);
   const [showConfetti, setShowConfetti]   = useState(false);
   const [leftOpen, setLeftOpen]       = useState(true);
+  const [minimized, setMinimized]     = useState(false);
+  const [currentPage, setCurrentPage] = useState<"home" | "playground">("home");
+  const [playgroundTab, setPlaygroundTab] = useState<"social" | "rank">("social");
   const [feedingMarket, setFeedingMarket] = useState(false);
   const [showChatPanel, setShowChatPanel] = useState(false);
   const [lastTradePulse, setLastTradePulse] = useState<TradePulseEvent | null>(null);
   const [shareUrl, setShareUrl] = useState("");
+
+  // ── four.meme user-signed trade state ─────────────────────
+  const [tradePick, setTradePick] = useState<TradeRecommendation | null>(null);
+  const [tradeStatus, setTradeStatus] = useState<TradeStatus>("idle");
+  const [tradeError, setTradeError] = useState<string | null>(null);
+  const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
+  const [tradeFunds] = useState(0.001); // 0.001 BNB per trade (within 0.005 cap)
+  const [tradeQuote, setTradeQuote] = useState<{ tokenManager: string; amountMsgValue: string; estimatedAmount: string; estimatedTokens: number } | null>(null);
+
+  // ── Agent Actions log (ephemeral per session) ────────────
+  const [agentActions, setAgentActions] = useState<AgentAction[]>([]);
+  const appendAction = useCallback((action: Omit<AgentAction, "id" | "timestamp">) => {
+    setAgentActions((prev) => [
+      { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, timestamp: Date.now(), ...action },
+      ...prev,
+    ].slice(0, 12));
+  }, []);
+
+  // ── wagmi: user wallet for signing ────────────────────────
+  const { address: userAddress, isConnected } = useAccount();
+  const currentChainId = useChainId();
+  const { switchChain } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient({ chainId: BSC_CHAIN_ID });
+  const onBsc = currentChainId === BSC_CHAIN_ID;
 
   // "Start Petting" gate — show welcome screen if the user has never sent a message
   const hasUserMessages = petState.conversationHistory.some(m => m.role === "user");
@@ -291,6 +363,173 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
   useEffect(() => {
     setShareUrl(window.location.origin);
   }, []);
+
+  // Log when a wallet DNA analysis has produced initial DNA (tool observation)
+  const loggedWalletAnalyzeRef = useRef(false);
+  useEffect(() => {
+    if (petState.walletSummary && !loggedWalletAnalyzeRef.current) {
+      loggedWalletAnalyzeRef.current = true;
+      appendAction({
+        tool: "moralis.wallet-analyze",
+        summary: `Wallet DNA → ${petState.tradingDNA?.tradingStyle ?? "custom"} / ${petState.tradingDNA?.petArchetype ?? "hype"}`,
+        status: "ok",
+      });
+    }
+  }, [petState.walletSummary, petState.tradingDNA, appendAction]);
+
+  // Auto-analyze the connected wagmi wallet so pets hatched via Quick Adopt
+  // still pick up on-chain DNA + tags once the user connects.
+  const autoAnalyzedRef = useRef<string | null>(null);
+  const [autoAnalyzing, setAutoAnalyzing] = useState(false);
+  useEffect(() => {
+    if (!isConnected || !userAddress) return;
+    if (autoAnalyzedRef.current === userAddress.toLowerCase()) return;
+    if (petStateRef.current.walletAddress?.toLowerCase() === userAddress.toLowerCase()) {
+      autoAnalyzedRef.current = userAddress.toLowerCase();
+      return;
+    }
+    autoAnalyzedRef.current = userAddress.toLowerCase();
+    setAutoAnalyzing(true);
+    (async () => {
+      try {
+        const res = await fetch("/api/pet/wallet-analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ walletAddress: userAddress }),
+        });
+        if (!res.ok) return;
+        const summary = (await res.json()) as WalletSummary;
+        const current = petStateRef.current;
+        const mergedTags = [
+          ...(current.personalityTags ?? []),
+          ...(summary.tradingDNA?.tags ?? []),
+        ];
+        const dedupedTags = Array.from(new Set(mergedTags)).slice(0, 8);
+        const updated: PetState = {
+          ...current,
+          walletAddress: userAddress,
+          walletSummary: summary.summary,
+          walletAnalyzedAt: Date.now(),
+          tradingDNA: summary.tradingDNA ?? current.tradingDNA,
+          personalityTags: dedupedTags,
+        };
+        onStateUpdate(updated);
+        appendAction({
+          tool: "moralis.wallet-analyze (auto)",
+          summary: `Synced DNA from ${userAddress.slice(0, 6)}…${userAddress.slice(-4)} → ${summary.tradingDNA?.tradingStyle ?? "custom"} / ${summary.tradingDNA?.petArchetype ?? "hype"}`,
+          status: "ok",
+        });
+      } catch {
+        appendAction({ tool: "moralis.wallet-analyze (auto)", summary: "Auto-analyze failed", status: "error" });
+      } finally {
+        setAutoAnalyzing(false);
+      }
+    })();
+  }, [isConnected, userAddress, onStateUpdate, appendAction]);
+
+  // ── four.meme on-chain event listener ────────────────────
+  // Polls TokenManager2 logs for the connected wallet's TokenPurchase / TokenSale,
+  // so the pet reacts even to trades the user makes outside our UI.
+  const lastSeenBlockRef = useRef<number>(0);
+  const seenTxsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isConnected || !userAddress) return;
+    // Reset seen-state when wallet changes
+    lastSeenBlockRef.current = 0;
+    seenTxsRef.current = new Set();
+
+    let stopped = false;
+    let attempts = 0;
+
+    async function pollOnce() {
+      try {
+        const url = new URL("/api/pet/wallet-events", window.location.origin);
+        url.searchParams.set("address", userAddress!);
+        if (lastSeenBlockRef.current) {
+          url.searchParams.set("sinceBlock", String(lastSeenBlockRef.current));
+        }
+        const res = await fetch(url.toString());
+        if (!res.ok) return;
+        const data = await res.json();
+        const firstRun = lastSeenBlockRef.current === 0;
+        lastSeenBlockRef.current = data.latestBlock ?? lastSeenBlockRef.current;
+        if (!Array.isArray(data.events)) return;
+        // First poll = baseline; don't fire on historical events, just log the listener
+        if (firstRun) {
+          if (attempts === 0) {
+            if (data.rpcLimited) {
+              appendAction({
+                tool: "four.meme.events",
+                summary: "Listener armed · public RPC throttled (set BSC_RPC_URL for live detection)",
+                status: "pending",
+              });
+            } else {
+              appendAction({
+                tool: "four.meme.events",
+                summary: `Listening for your TokenPurchase / TokenSale on TokenManager2 (block ${data.latestBlock})`,
+                status: "ok",
+              });
+            }
+          }
+          return;
+        }
+        for (const ev of data.events) {
+          if (seenTxsRef.current.has(ev.txHash)) continue;
+          seenTxsRef.current.add(ev.txHash);
+          const amount = Number(ev.amountWei) / 1e18;
+          const cost = Number(ev.costWei) / 1e18;
+          appendAction({
+            tool: ev.type === "buy" ? "four.meme.TokenPurchase" : "four.meme.TokenSale",
+            summary: ev.type === "buy"
+              ? `Detected your BUY: ${cost.toFixed(4)} BNB → ~${Math.round(amount).toLocaleString()} ${ev.token.slice(0, 8)}…`
+              : `Detected your SELL: ~${Math.round(amount).toLocaleString()} ${ev.token.slice(0, 8)}… → ${cost.toFixed(4)} BNB`,
+            txHash: ev.txHash,
+            status: "ok",
+          });
+          // Trigger a live Trade Pulse
+          const pulse: TradePulseEvent = ev.type === "buy"
+            ? {
+                kind: "buy",
+                icon: "🛰",
+                labelEn: "LIVE Detected Buy",
+                labelZh: "监听到你买入",
+                detailEn: `${cost.toFixed(4)} BNB · ${ev.token.slice(0, 6)}…`,
+                detailZh: `${cost.toFixed(4)} BNB · ${ev.token.slice(0, 6)}…`,
+                token: ev.token.slice(0, 8),
+                move: `${cost.toFixed(3)} BNB`,
+                color: "#00FFAA",
+                vitals: { energy: 14, satiety: -3, memeScore: 12 },
+                xp: 18,
+                mood: "happy",
+                reaction: "encouragement",
+              }
+            : {
+                kind: "exit",
+                icon: "🛰",
+                labelEn: "LIVE Detected Sell",
+                labelZh: "监听到你卖出",
+                detailEn: `→ ${cost.toFixed(4)} BNB`,
+                detailZh: `→ ${cost.toFixed(4)} BNB`,
+                token: ev.token.slice(0, 8),
+                move: "closed",
+                color: "#00D4FF",
+                vitals: { energy: 6, satiety: 4, memeScore: 3 },
+                xp: 12,
+                mood: "neutral",
+                reaction: "neutral",
+              };
+          handleTradePulse(pulse);
+        }
+      } catch { /* silent */ }
+      attempts++;
+    }
+
+    pollOnce();
+    // Poll every 30s — window is 30 blocks (~90s) so this has ~3x overlap for safety
+    const id = setInterval(() => { if (!stopped) pollOnce(); }, 30_000);
+    return () => { stopped = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected, userAddress]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -368,6 +607,12 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
         newsContext: resolvedNewsCtx,
       });
 
+      appendAction({
+        tool: resolvedNewsCtx ? "Groq.chat + 6551.news-context" : "Groq.chat",
+        summary: `Reasoned reply (${response.reply.length} chars)${response.xpDelta ? `, +${response.xpDelta} XP` : ""}`,
+        status: "ok",
+      });
+
       const assistantMsg: Message = {
         role: "assistant",
         content: response.reply,
@@ -405,7 +650,7 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
       setSending(false);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
-  }, [input, sending, onStateUpdate]);
+  }, [input, sending, onStateUpdate, appendAction]);
 
   async function handleWalletConnected(address: string, walletData: WalletSummary) {
     const updated: PetState = {
@@ -490,6 +735,14 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
         newsCtxCache.current = news?.context ?? "";
         newsCtxFetchedAt.current = Date.now();
       }
+
+      appendAction({
+        tool: "four.meme.rankings + 6551.news-context",
+        summary: topToken
+          ? `Fed pet with $${topToken.symbol} (${topToken.day1Increase >= 0 ? "+" : ""}${topToken.day1Increase?.toFixed(1)}%) · sentiment ${news?.sentiment ?? "?"}`
+          : "Fed pet (cached market snack)",
+        status: "ok",
+      });
 
       const snack: MarketSnack | null = topToken
         ? {
@@ -594,6 +847,273 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
     onStateUpdate(updated);
   }
 
+  // ── User-signed trade handlers (four.meme V2 via wagmi) ───
+  async function handlePickToken() {
+    setTradeStatus("picking");
+    setTradeError(null);
+    setTradeResult(null);
+    setTradeQuote(null);
+    try {
+      const archetype = petState.tradingDNA?.petArchetype ?? "hype";
+      const res = await fetch("/api/pet/trade-recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archetype, lang: petState.lang }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.pick) {
+        setTradeError(data.error ?? "No recommendation available");
+        setTradeStatus("fail");
+        appendAction({ tool: "four.meme.rankings", summary: `Failed: ${data.error ?? "no pick"}`, status: "error" });
+        return;
+      }
+      const pick: TradeRecommendation = data.pick;
+      setTradePick(pick);
+      appendAction({
+        tool: "four.meme.rankings",
+        summary: `Scored 20 HOT tokens · picked $${pick.symbol} (${pick.day1Increase >= 0 ? "+" : ""}${pick.day1Increase.toFixed(1)}% 24h)`,
+        status: "ok",
+      });
+
+      // Fetch quote (Helper3.tryBuy) so we can preview slippage before asking user to sign
+      setTradeStatus("quoting");
+      const qRes = await fetch("/api/pet/trade-quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "buy", tokenAddress: pick.address, fundsBnb: tradeFunds }),
+      });
+      const qData = await qRes.json();
+      if (qRes.ok) {
+        setTradeQuote({
+          tokenManager: qData.tokenManager,
+          amountMsgValue: qData.fundsWei,
+          estimatedAmount: qData.estimatedAmount,
+          estimatedTokens: qData.estimatedTokens,
+        });
+        appendAction({
+          tool: "Helper3.tryBuy",
+          summary: `Quote: ${tradeFunds} BNB → ~${Math.round(qData.estimatedTokens).toLocaleString()} $${pick.symbol}`,
+          status: "ok",
+        });
+      }
+      setTradeStatus("idle");
+    } catch (err) {
+      setTradeError(String(err));
+      setTradeStatus("fail");
+      appendAction({ tool: "four.meme.rankings", summary: `Error: ${String(err).slice(0, 80)}`, status: "error" });
+    }
+  }
+
+  async function handleExecuteBuy() {
+    if (!tradePick || !tradeQuote) return;
+    if (!isConnected) {
+      setTradeError("Connect your wallet first.");
+      return;
+    }
+    if (!onBsc) {
+      try { await switchChain({ chainId: BSC_CHAIN_ID }); } catch { /* user cancelled */ }
+      return;
+    }
+    setTradeError(null);
+    setTradeResult(null);
+    try {
+      const fundsWei = parseEther(String(tradeFunds));
+      if (fundsWei > MAX_BUY_WEI) {
+        setTradeError("Over 0.005 BNB safety cap. Lower the amount.");
+        return;
+      }
+      // 10% slippage guard on minAmount
+      const estimated = BigInt(tradeQuote.estimatedAmount);
+      const minAmount = (estimated * 9000n) / 10_000n;
+
+      setTradeStatus("awaiting-signature");
+      const hash = await writeContractAsync({
+        address: tradeQuote.tokenManager as Address,
+        abi: TM2_BUY_ABI,
+        functionName: "buyTokenAMAP",
+        args: [tradePick.address as Address, fundsWei, minAmount],
+        value: fundsWei,
+        chainId: BSC_CHAIN_ID,
+      });
+      appendAction({
+        tool: "TokenManager2.buyTokenAMAP",
+        summary: `User signed buy: ${tradeFunds} BNB → $${tradePick.symbol}`,
+        txHash: hash,
+        status: "pending",
+      });
+
+      setTradeStatus("confirming");
+      const receipt = await publicClient?.waitForTransactionReceipt({ hash, timeout: 60_000 });
+
+      const result: TradeResult = {
+        action: "buy",
+        txHash: hash,
+        bscScanUrl: `https://bscscan.com/tx/${hash}`,
+        symbol: tradePick.symbol,
+        fundsBnb: tradeFunds,
+        estimatedTokens: tradeQuote.estimatedTokens,
+        status: receipt?.status === "success" ? "success" : receipt?.status === "reverted" ? "reverted" : "pending",
+      };
+      setTradeResult(result);
+      setTradeStatus(result.status === "success" ? "success" : "fail");
+      appendAction({
+        tool: "TokenManager2.buyTokenAMAP",
+        summary: `Buy ${result.status === "success" ? "confirmed" : "failed"}: $${tradePick.symbol}`,
+        txHash: hash,
+        status: result.status === "success" ? "ok" : "error",
+      });
+
+      // Fire real Trade Pulse + chat
+      const pulse: TradePulseEvent = {
+        kind: "buy",
+        icon: "🚀",
+        labelEn: "LIVE Buy",
+        labelZh: "真实买入",
+        detailEn: `${tradeFunds} BNB into $${tradePick.symbol} on four.meme`,
+        detailZh: `在 four.meme 用 ${tradeFunds} BNB 买入 $${tradePick.symbol}`,
+        token: `$${tradePick.symbol}`,
+        move: `${tradeFunds} BNB`,
+        color: "#00FFAA",
+        vitals: { energy: 16, satiety: -4, memeScore: 14 },
+        xp: 22,
+        mood: "happy",
+        reaction: "encouragement",
+      };
+      handleTradePulse(pulse);
+
+      const zh = petState.lang === "zh";
+      const msg = zh
+        ? `你刚在 four.meme 用 ${tradeFunds} BNB 买了 $${tradePick.symbol}！tx: ${hash.slice(0, 10)}... 这是真的链上交易 🚀`
+        : `You just aped ${tradeFunds} BNB into $${tradePick.symbol} on four.meme! tx: ${hash.slice(0, 10)}... Real on-chain 🚀`;
+      if (!chatStarted) startChat();
+      setTimeout(() => sendMessage(msg), 200);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // user rejection is benign
+      const rejected = /rejected|denied|user/i.test(msg);
+      setTradeError(rejected ? "Signature declined." : msg);
+      setTradeStatus("fail");
+      appendAction({
+        tool: "TokenManager2.buyTokenAMAP",
+        summary: rejected ? "User declined signature" : `Error: ${msg.slice(0, 80)}`,
+        status: "error",
+      });
+    }
+  }
+
+  async function handleExecuteSell() {
+    if (!tradePick || !userAddress || !publicClient) return;
+    if (!isConnected) { setTradeError("Connect wallet first."); return; }
+    if (!onBsc) { try { await switchChain({ chainId: BSC_CHAIN_ID }); } catch {} return; }
+    setTradeError(null);
+    setTradeResult(null);
+    try {
+      // Read full balance of this token for the connected user
+      const balance = (await publicClient.readContract({
+        address: tradePick.address as Address,
+        abi: ERC20_ABI,
+        functionName: "balanceOf",
+        args: [userAddress],
+      })) as bigint;
+
+      if (balance <= 0n) {
+        setTradeError(petState.lang === "zh" ? "你的钱包里没有这个 token。" : "Your wallet has none of this token.");
+        return;
+      }
+
+      appendAction({
+        tool: "ERC20.balanceOf",
+        summary: `Read $${tradePick.symbol} balance: ${(Number(balance) / 1e18).toFixed(4)}`,
+        status: "ok",
+      });
+
+      // Resolve tokenManager via quote endpoint (also validates V2)
+      const qRes = await fetch("/api/pet/trade-quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "sell", tokenAddress: tradePick.address, tokenAmount: balance.toString() }),
+      });
+      const q = await qRes.json();
+      if (!qRes.ok) { setTradeError(q.error ?? "Quote failed"); return; }
+
+      const expectedFundsWei = BigInt(q.fundsWei ?? "0");
+      const minFundsWei = (expectedFundsWei * 9000n) / 10_000n;
+      const tokenManager = q.tokenManager as Address;
+
+      // 1) approve
+      setTradeStatus("approving");
+      const approveHash = await writeContractAsync({
+        address: tradePick.address as Address,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [tokenManager, balance],
+        chainId: BSC_CHAIN_ID,
+      });
+      appendAction({ tool: "ERC20.approve", summary: `Approved TokenManager for $${tradePick.symbol}`, txHash: approveHash, status: "pending" });
+      await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: 60_000 });
+
+      // 2) sellToken
+      setTradeStatus("awaiting-signature");
+      const sellHash = await writeContractAsync({
+        address: tokenManager,
+        abi: TM2_SELL_MIN_ABI,
+        functionName: "sellToken",
+        args: [0n, tradePick.address as Address, balance, minFundsWei],
+        chainId: BSC_CHAIN_ID,
+      });
+      appendAction({ tool: "TokenManager2.sellToken", summary: `User signed sell: $${tradePick.symbol}`, txHash: sellHash, status: "pending" });
+
+      setTradeStatus("confirming");
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: sellHash, timeout: 60_000 });
+
+      const result: TradeResult = {
+        action: "sell",
+        txHash: sellHash,
+        bscScanUrl: `https://bscscan.com/tx/${sellHash}`,
+        symbol: tradePick.symbol,
+        status: receipt?.status === "success" ? "success" : "pending",
+      };
+      setTradeResult(result);
+      setTradeStatus(result.status === "success" ? "success" : "fail");
+      appendAction({
+        tool: "TokenManager2.sellToken",
+        summary: `Sell ${result.status === "success" ? "confirmed" : "failed"}: $${tradePick.symbol}`,
+        txHash: sellHash,
+        status: result.status === "success" ? "ok" : "error",
+      });
+
+      const pulse: TradePulseEvent = {
+        kind: "exit",
+        icon: "🧘",
+        labelEn: "LIVE Exit",
+        labelZh: "真实卖出",
+        detailEn: `Sold $${tradePick.symbol} on four.meme`,
+        detailZh: `在 four.meme 卖出 $${tradePick.symbol}`,
+        token: `$${tradePick.symbol}`,
+        move: "closed",
+        color: "#00D4FF",
+        vitals: { energy: 6, satiety: 4, memeScore: 3 },
+        xp: 14,
+        mood: "neutral",
+        reaction: "neutral",
+      };
+      handleTradePulse(pulse);
+
+      const zh = petState.lang === "zh";
+      const msg = zh
+        ? `$${tradePick.symbol} 已清仓，tx: ${sellHash.slice(0, 10)}...`
+        : `Closed $${tradePick.symbol}. tx: ${sellHash.slice(0, 10)}...`;
+      if (!chatStarted) startChat();
+      setTimeout(() => sendMessage(msg), 200);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const rejected = /rejected|denied|user/i.test(msg);
+      setTradeError(rejected ? "Signature declined." : msg);
+      setTradeStatus("fail");
+      appendAction({ tool: "TokenManager2.sellToken", summary: rejected ? "User declined signature" : `Error: ${msg.slice(0, 80)}`, status: "error" });
+    }
+  }
+
   async function handleMintIdentity() {
     setRegistering(true);
     setShowMintModal(false);
@@ -611,6 +1131,12 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
       if (data.agentId != null) {
         const updated: PetState = { ...petStateRef.current, agentId: data.agentId };
         onStateUpdate(updated);
+        appendAction({
+          tool: "EIP-8004.register",
+          summary: `Minted Agent #${data.agentId}`,
+          txHash: data.txHash,
+          status: "ok",
+        });
         if (!chatStarted) startChat();
         await sendMessage(
           petState.lang === "zh"
@@ -693,6 +1219,134 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
     .filter(([lvl]) => petState.level >= Number(lvl))
     .map(([, d]) => d).slice(-1)[0] ?? ""; // show highest earned
 
+  // ── Floating corner orb (minimized mode) ─────────────────────
+  if (minimized) {
+    const pulseLabel = lastTradePulse
+      ? `${lastTradePulse.icon} ${lastTradePulse.token} ${lastTradePulse.move}`
+      : null;
+    return (
+      <div
+        style={{
+          position: "fixed",
+          bottom: 28,
+          right: 28,
+          zIndex: 9999,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: 8,
+          pointerEvents: "none",
+        }}
+      >
+        {/* Tooltip bubble — last trade event or mood */}
+        {pulseLabel && (
+          <div
+            style={{
+              background: "rgba(15,10,30,0.92)",
+              border: `1px solid ${accentColor}40`,
+              borderRadius: 12,
+              padding: "5px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              color: accentColor,
+              backdropFilter: "blur(8px)",
+              pointerEvents: "none",
+              whiteSpace: "nowrap",
+              boxShadow: `0 4px 20px ${accentColor}25`,
+            }}
+          >
+            {pulseLabel}
+          </div>
+        )}
+
+        {/* Orb */}
+        <div
+          onClick={() => setMinimized(false)}
+          title="Expand MemePet"
+          style={{
+            width: 88,
+            height: 88,
+            borderRadius: "50%",
+            background: accentGradient,
+            padding: 3,
+            boxShadow: `0 0 28px ${accentColor}66, 0 8px 32px rgba(0,0,0,0.7)`,
+            cursor: "pointer",
+            pointerEvents: "auto",
+            animation: "orb-float 3s ease-in-out infinite",
+            position: "relative",
+            flexShrink: 0,
+          }}
+        >
+          {/* Inner dark circle with emoji */}
+          <div
+            style={{
+              width: "100%",
+              height: "100%",
+              borderRadius: "50%",
+              background: "radial-gradient(circle at 40% 35%, #1e1245, #0d0a20)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 42,
+                lineHeight: 1,
+                animation: "pet-breathe 2.8s ease-in-out infinite",
+                filter: `drop-shadow(0 2px 8px ${accentColor}88)`,
+                userSelect: "none",
+              }}
+            >
+              {petState.emoji}
+            </span>
+          </div>
+
+          {/* Mood badge */}
+          <div
+            style={{
+              position: "absolute",
+              bottom: 1,
+              right: 1,
+              width: 22,
+              height: 22,
+              borderRadius: "50%",
+              background: "#1a1030",
+              border: `2px solid ${accentColor}55`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 12,
+            }}
+          >
+            {moodEmoji}
+          </div>
+        </div>
+
+        {/* "expand" hint label */}
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: "rgba(255,255,255,0.3)",
+            pointerEvents: "none",
+            textAlign: "center",
+            letterSpacing: "0.05em",
+          }}
+        >
+          tap to expand
+        </div>
+
+        <style>{`
+          @keyframes orb-float {
+            0%,100% { transform: translateY(0px) scale(1); }
+            50%      { transform: translateY(-6px) scale(1.02); }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
   if (showHatchIntro) {
     const zh = petState.lang === "zh";
     const dna = petState.tradingDNA;
@@ -703,6 +1357,15 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
     return (
       <div className="min-h-screen trader-shell flex flex-col" style={{ color: "#fff" }}>
         {showConfetti && <Confetti />}
+
+        {/* ── NavBar ── */}
+        <NavBar
+          currentPage={currentPage}
+          onNavigate={(page) => setCurrentPage(page)}
+          zh={petState.lang === "zh"}
+          onShare={() => setShowShareCard(true)}
+          onReset={onReset}
+        />
 
         {xpPopup !== null && (
           <div className="fixed top-16 right-4 z-50 pointer-events-none"
@@ -790,28 +1453,6 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
           </div>
         )}
 
-        <header className="trader-nav flex items-center justify-between px-5 sm:px-7 py-4">
-          <div className="flex items-center gap-2.5">
-            <span className="text-2xl">🐾</span>
-            <span className="font-black text-lg tracking-tight">Meme<span style={{ color: "#00FFAA" }}>Pet</span></span>
-            <span className="hidden sm:inline-flex trader-chip trader-chip-green text-[10px] px-2.5 py-1 font-signal">
-              HATCH COMPLETE
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowShareCard(true)}
-              className="trader-action rounded-full px-3 py-1.5 text-xs font-black"
-              style={{ color: accentColor }}>
-              Share / 分享
-            </button>
-            <button onClick={onReset}
-              className="trader-action rounded-full px-3 py-1.5 text-xs font-black"
-              style={{ color: "rgba(255,255,255,0.62)" }}>
-              Reset / 重置
-            </button>
-          </div>
-        </header>
-
         <div className="market-tape px-5 sm:px-7 py-2 text-[11px] font-black font-signal">
           <span className="text-white/35">{zh ? "孵化完成" : "JUST HATCHED"} </span>
           <span className="ticker-pill">DNA <span className="ticker-up">{dna?.tradingStyle?.toUpperCase() ?? "MEME"}</span></span>
@@ -821,44 +1462,196 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
         </div>
 
         <main className="flex-1 px-5 sm:px-7 py-7">
-          <div className="max-w-7xl mx-auto grid xl:grid-cols-[0.9fr_1.1fr] gap-5 lg:gap-6 items-start">
-            <section className="trader-card rounded-[34px] p-5 sm:p-6 text-center">
+          <div className="max-w-7xl mx-auto space-y-5 lg:space-y-6">
+            {/* ── Wallet DNA source banner ───────────────────────── */}
+            {(() => {
+              const hasDna = !!petState.walletAddress;
+              const connectedMatches = isConnected && userAddress && petState.walletAddress?.toLowerCase() === userAddress.toLowerCase();
+              return (
+                <div
+                  className="trader-card rounded-[22px] p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3"
+                  style={{
+                    borderColor: hasDna ? "rgba(0,255,170,0.3)" : "rgba(255,209,102,0.3)",
+                    background: hasDna ? "rgba(0,255,170,0.03)" : "rgba(255,209,102,0.03)",
+                  }}
+                >
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <span className="text-2xl flex-shrink-0">{hasDna ? "🧬" : "🔗"}</span>
+                    <div className="min-w-0">
+                      <div className="text-xs font-black font-signal tracking-[0.18em]" style={{ color: hasDna ? "#00FFAA" : "#FFD166" }}>
+                        {hasDna
+                          ? (zh ? "链上 DNA 已同步" : "ON-CHAIN DNA SYNCED")
+                          : (zh ? "连接钱包 · 解锁链上 DNA" : "CONNECT WALLET · UNLOCK ON-CHAIN DNA")}
+                      </div>
+                      <div className="text-sm mt-0.5 text-white/60 truncate">
+                        {autoAnalyzing
+                          ? (zh ? "Moralis 分析中 · 宠物风格和标签即将更新…" : "Moralis analyzing · pet style + tags updating…")
+                          : hasDna
+                          ? (zh
+                              ? `${petState.walletAddress?.slice(0, 6)}…${petState.walletAddress?.slice(-4)} · 风格 ${dna?.tradingStyle ?? "custom"} · 原型 ${dna?.petArchetype ?? "hype"}`
+                              : `${petState.walletAddress?.slice(0, 6)}…${petState.walletAddress?.slice(-4)} · style ${dna?.tradingStyle ?? "custom"} · archetype ${dna?.petArchetype ?? "hype"}`)
+                          : (zh
+                              ? "你的宠物是用自定义性格孵化的。连钱包 → 我们读你的 BSC 交易历史 → 给宠物换成你真实的交易风格 + 标签。"
+                              : "Your pet hatched from a custom personality. Connect your wallet → we read your BSC history → re-theme the pet with your real trading style + tags.")}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {connectedMatches ? (
+                      <span
+                        className="trader-chip px-2.5 py-1 text-[11px] font-signal"
+                        style={{ background: "rgba(0,255,170,0.1)", borderColor: "rgba(0,255,170,0.35)", color: "#00FFAA" }}
+                      >
+                        {zh ? "✓ 已验证" : "✓ Verified"}
+                      </span>
+                    ) : null}
+                    <ConnectButton showBalance={false} chainStatus="icon" accountStatus="address" />
+                  </div>
+                </div>
+              );
+            })()}
+
+          {currentPage === "playground" && (
+            <div className="max-w-3xl mx-auto w-full px-4 sm:px-6 py-6 flex flex-col gap-5">
+              {/* Rank Tab */}
+              <div className="flex items-center gap-2 mb-2">
+                {(["social", "rank"] as const).map((t) => (
+                  <button key={t} onClick={() => setPlaygroundTab(t)}
+                    className="px-4 py-1.5 rounded-lg text-sm font-black transition-all"
+                    style={{
+                      background: playgroundTab === t ? "rgba(0,255,170,0.18)" : "transparent",
+                      color: playgroundTab === t ? "#00FFAA" : "rgba(255,255,255,0.4)",
+                      border: `1px solid ${playgroundTab === t ? "rgba(0,255,170,0.4)" : "transparent"}`,
+                    }}>
+                    {t === "social" ? (zh ? "🐾 社交日志" : "🐾 Social Log") : (zh ? "📊 排行" : "📊 Rank")}
+                  </button>
+                ))}
+              </div>
+
+              {playgroundTab === "rank" ? (
+                <PetRank petState={petState} zh={zh} />
+              ) : (
+                <>
+                  {/* Go to Playground button */}
+                  <div className="trader-card rounded-[24px] p-5 text-center">
+                    <div className="text-3xl mb-3">🌳</div>
+                    <div className="text-sm font-black mb-1" style={{ color: "#FF6BAA" }}>
+                      {zh ? "游乐场" : "Playground"}
+                    </div>
+                    <p className="text-xs text-white/48 mb-4">
+                      {zh ? "点击后宠物自动进场社交，遭遇结果会出现在下方日志里。" : "Tap to send your pet into the playground. Match results appear in the log below."}
+                    </p>
+                    <button
+                      onClick={() => appendAction({ tool: "playground.enter", summary: `${petState.name} entered the playground and is socializing…`, status: "ok" })}
+                      className="trader-action rounded-2xl py-2.5 px-6 text-sm font-black"
+                      style={{ color: "#FF6BAA", borderColor: "rgba(255,107,170,0.4)" }}>
+                      {zh ? "进入游乐场 →" : "Go to Playground →"}
+                    </button>
+                  </div>
+
+                  {/* Interaction log */}
+                  <div className="trader-terminal rounded-[24px] p-5">
+                    <div className="text-xs font-black font-signal tracking-[0.18em] mb-4" style={{ color: "#00FFAA" }}>
+                      {zh ? "互动日志" : "INTERACTION LOG"}
+                    </div>
+                    {agentActions.length === 0 ? (
+                      <p className="text-xs text-white/32 italic">{zh ? "还没有互动记录。" : "No interactions yet."}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {[...agentActions].reverse().slice(0, 20).map((a, i) => (
+                          <div key={i} className="flex items-start gap-2 text-xs">
+                            <span style={{ color: a.status === "ok" ? "#00FFAA" : a.status === "error" ? "#FF6B6B" : "#FFD166" }}>
+                              {a.status === "ok" ? "●" : a.status === "error" ? "✕" : "○"}
+                            </span>
+                            <span className="text-white/60 leading-relaxed">{a.summary}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {currentPage === "home" && <div className="grid xl:grid-cols-[0.9fr_1.1fr] gap-5 lg:gap-6 items-start">
+            <section className="flex flex-col gap-4">
+            <div className="trader-card rounded-[34px] p-5 sm:p-6 text-center">
               <div className="relative z-10 w-full">
                 <div className="inline-flex trader-chip trader-chip-hot px-3 py-1 text-xs font-signal mb-4">
                   {zh ? "新宠物已诞生" : "NEW COMPANION ONLINE"}
                 </div>
 
-                <div className="relative mx-auto mb-5 w-48 h-48 sm:w-56 sm:h-56">
+                <div className="relative mx-auto mb-5 w-56 h-56 sm:w-72 sm:h-72">
                   <div className="absolute inset-[-28px] rounded-full blur-3xl opacity-30"
                     style={{ background: accentColor }} />
-                  <div className="relative pet-orb rounded-[44px] w-full h-full flex items-center justify-center">
-                    <span className="pet-breathe select-none"
-                      style={{ fontSize: 112, lineHeight: 1, filter: `drop-shadow(0 10px 30px ${accentColor}66)` }}>
-                      {petState.emoji}
-                    </span>
+                  <div className="relative pet-orb rounded-[44px] w-full h-full overflow-hidden">
+                    <VRMViewer
+                      url={USER_PET_VRM}
+                      mood={petState.mood === "happy" ? "happy" : petState.mood === "disappointed" ? "sad" : "neutral"}
+                      framing="portrait"
+                      fallbackEmoji={petState.emoji}
+                    />
                   </div>
                   <div className="absolute -bottom-3 -right-3 rounded-2xl px-3 py-2 trader-terminal">
                     <span className="text-2xl">{moodEmoji}</span>
                   </div>
                 </div>
 
-                <h1 className="text-4xl sm:text-5xl font-black tracking-tight leading-none mb-3"
+                {/* Tags above name */}
+                {introTags.length > 0 && (
+                  <div className="flex flex-wrap justify-center gap-2 mb-3">
+                    {introTags.map(tag => (
+                      <span key={tag} className="trader-chip px-3 py-1 text-xs">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <h1 className="text-4xl sm:text-5xl font-black tracking-tight leading-none mb-2"
                   style={{ textShadow: `0 0 34px ${accentColor}66` }}>
                   {petState.name}
                 </h1>
+
+                {/* Identity — personality + on-chain status */}
+                <p className="text-sm text-white/52 italic mb-3">{petState.personality}</p>
+
+                {/* Feed + Chat */}
+                <div className="flex gap-3 mb-4">
+                  <button onClick={handleFeedMarket} disabled={feedingMarket || sending}
+                    className="flex-1 trader-action rounded-2xl py-2.5 px-3 text-sm font-black disabled:opacity-45"
+                    style={{ color: "#00FFAA", borderColor: "rgba(0,255,170,0.25)" }}>
+                    {feedingMarket ? (zh ? "喂养中…" : "Feeding…") : (zh ? "🍖 喂市场" : "🍖 Feed")}
+                  </button>
+                  <button onClick={() => { setChatStarted(true); setShowChatPanel(true); setTimeout(() => inputRef.current?.focus(), 80); }}
+                    className="flex-1 trader-action rounded-2xl py-2.5 px-3 text-sm font-black"
+                    style={{ color: accentColor, borderColor: `${accentColor}40` }}>
+                    {zh ? "💬 聊天" : "💬 Chat"}
+                  </button>
+                </div>
+                <div className="flex items-center justify-center gap-2 mb-4">
+                  <div className="text-xs px-3 py-1 rounded-full font-black"
+                    style={{ background: petState.agentId != null ? "rgba(0,255,170,0.15)" : "rgba(255,255,255,0.07)", color: petState.agentId != null ? "#00FFAA" : "rgba(255,255,255,0.4)", border: `1px solid ${petState.agentId != null ? "rgba(0,255,170,0.3)" : "rgba(255,255,255,0.1)"}` }}>
+                    {petState.agentId != null ? `⛓️ Agent #${petState.agentId}` : (zh ? "⛓️ 待铸造" : "⛓️ Not minted")}
+                  </div>
+                  <button onClick={() => setShowMintModal(true)} disabled={registering || sending || petState.agentId != null}
+                    className="text-xs px-3 py-1 rounded-full font-black disabled:opacity-35 transition-all"
+                    style={{ background: "rgba(255,209,102,0.12)", color: "#FFD166", border: "1px solid rgba(255,209,102,0.3)" }}>
+                    {petState.agentId != null ? (zh ? "已上链" : "Minted") : (zh ? "铸造" : "Mint")}
+                  </button>
+                  <button onClick={() => setShowShareCard(true)}
+                    className="text-xs px-3 py-1 rounded-full font-black transition-all"
+                    style={{ background: "rgba(0,212,255,0.1)", color: "#00D4FF", border: "1px solid rgba(0,212,255,0.25)" }}>
+                    {zh ? "分享" : "Share"}
+                  </button>
+                </div>
+
                 <p className="max-w-md mx-auto text-sm sm:text-base leading-relaxed text-white/58">
                   {greeting || (zh
                     ? "我已经在你的交易桌旁边上线了。绿色我庆祝，红色我陪你回血。"
                     : "I am online beside your trading desk. Green candles get celebration, red candles get company.")}
                 </p>
-
-                <div className="flex flex-wrap justify-center gap-2 mt-5">
-                  {introTags.map(tag => (
-                    <span key={tag} className="trader-chip px-3 py-1 text-xs">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
 
                 <div className="mt-6 rounded-3xl p-4 trader-terminal text-left">
                   <div className="flex items-center justify-between mb-3">
@@ -891,9 +1684,55 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
                   </div>
                 </div>
               </div>
-            </section>
+            </div>
+
+            {/* ── WALLET DNA / GOALS (moved under PET STATUS) ───── */}
+            <div className="trader-terminal rounded-[28px] p-5">
+              <div className="text-xs font-black font-signal tracking-[0.18em] mb-3" style={{ color: "#00FFAA" }}>
+                {zh ? "钱包 DNA / 目标" : "WALLET DNA / GOALS"}
+              </div>
+              <div className="space-y-1 mb-4">
+                <div className="signal-row">
+                  <span className="text-xs font-black font-signal text-white/32">DNA</span>
+                  <span className="text-xs font-black text-right" style={{ color: "#00FFAA" }}>
+                    {dna?.headline ?? (zh ? "自定义性格孵化" : "Custom personality hatch")}
+                  </span>
+                </div>
+                <div className="signal-row">
+                  <span className="text-xs font-black font-signal text-white/32">{zh ? "模式" : "MODE"}</span>
+                  <span className="text-xs font-black text-right" style={{ color: "#FFD166" }}>
+                    {zh ? "交易友好，不抢方向盘" : "Trading-friendly, no wheel-grabbing"}
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {activeGoals.length > 0 ? activeGoals.map(goal => (
+                  <div key={goal.id} className="rounded-2xl p-3"
+                    style={{ background: `${accentColor}0d`, border: `1px solid ${accentColor}24` }}>
+                    <div className="text-sm font-black text-white mb-2">{goal.text}</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button onClick={() => resolveGoal(goal.id, "hit")}
+                        className="trader-action rounded-xl py-2 text-xs font-black"
+                        style={{ color: "#00FFAA", borderColor: "rgba(0,255,170,0.25)" }}>
+                        ✅ Done
+                      </button>
+                      <button onClick={() => resolveGoal(goal.id, "missed")}
+                        className="trader-action rounded-xl py-2 text-xs font-black"
+                        style={{ color: "#FF6B6B", borderColor: "rgba(255,107,107,0.25)" }}>
+                        ✕ Missed
+                      </button>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="text-sm text-white/42">{zh ? "还没有目标。" : "No active goals yet."}</div>
+                )}
+              </div>
+            </div>
+          </section>
 
             <section className="flex flex-col gap-4">
+              <PetPlayground petState={petState} onAction={appendAction} />
+
               <div className="trader-card rounded-[28px] p-5 sm:p-6">
                 <div className="flex items-start justify-between gap-4 mb-5">
                   <div className="relative z-10">
@@ -926,88 +1765,265 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
                 </div>
               </div>
 
-              <div className="grid lg:grid-cols-[1fr_0.9fr] gap-4">
-                <div className="trader-terminal rounded-[28px] p-5">
-                  <div className="text-xs font-black font-signal tracking-[0.18em] mb-3" style={{ color: "#00FFAA" }}>
-                    {zh ? "钱包 DNA / 目标" : "WALLET DNA / GOALS"}
-                  </div>
-                  <div className="space-y-1 mb-4">
-                    <div className="signal-row">
-                      <span className="text-xs font-black font-signal text-white/32">DNA</span>
-                      <span className="text-xs font-black text-right" style={{ color: "#00FFAA" }}>
-                        {dna?.headline ?? (zh ? "自定义性格孵化" : "Custom personality hatch")}
-                      </span>
+              {/* ── Pet-Recommended Trade (user-signed on four.meme V2) ── */}
+              <div className="trader-card rounded-[28px] p-5 sm:p-6" style={{ borderColor: "rgba(0,255,170,0.25)" }}>
+                <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
+                  <div className="relative z-10 min-w-0">
+                    <div className="text-xs font-black font-signal tracking-[0.18em]" style={{ color: "#FFD166" }}>
+                      {zh ? "宠物推荐 × 你签名 · AGENTIC" : "PET-PICKED · YOU SIGN"}
                     </div>
-                    <div className="signal-row">
-                      <span className="text-xs font-black font-signal text-white/32">{zh ? "模式" : "MODE"}</span>
-                      <span className="text-xs font-black text-right" style={{ color: "#FFD166" }}>
-                        {zh ? "交易友好，不抢方向盘" : "Trading-friendly, no wheel-grabbing"}
-                      </span>
-                    </div>
+                    <p className="text-sm mt-1 text-white/48">
+                      {zh
+                        ? "宠物用 DNA 在 four.meme 选币，你用自己的钱包在 BSC 签。"
+                        : "Pet picks a four.meme token from its DNA; you sign with your wallet on BSC."}
+                    </p>
                   </div>
-                  <div className="space-y-2">
-                    {activeGoals.length > 0 ? activeGoals.map(goal => (
-                      <div key={goal.id} className="rounded-2xl p-3"
-                        style={{ background: `${accentColor}0d`, border: `1px solid ${accentColor}24` }}>
-                        <div className="text-sm font-black text-white mb-2">{goal.text}</div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <button onClick={() => resolveGoal(goal.id, "hit")}
-                            className="trader-action rounded-xl py-2 text-xs font-black"
-                            style={{ color: "#00FFAA", borderColor: "rgba(0,255,170,0.25)" }}>
-                            ✅ Done
-                          </button>
-                          <button onClick={() => resolveGoal(goal.id, "missed")}
-                            className="trader-action rounded-xl py-2 text-xs font-black"
-                            style={{ color: "#FF6B6B", borderColor: "rgba(255,107,107,0.25)" }}>
-                            ✕ Missed
-                          </button>
-                        </div>
-                      </div>
-                    )) : (
-                      <div className="text-sm text-white/42">{zh ? "还没有目标。" : "No active goals yet."}</div>
-                    )}
+                  <div className="relative z-10 flex-shrink-0">
+                    <ConnectButton showBalance={{ smallScreen: false, largeScreen: true }} chainStatus="icon" />
                   </div>
                 </div>
 
-                <div className="trader-terminal rounded-[28px] p-5 flex flex-col gap-3">
-                  <div>
-                    <div className="text-xs font-black font-signal tracking-[0.18em]" style={{ color: accentColor }}>
-                      {zh ? "身份 / 操作" : "IDENTITY / ACTIONS"}
+                {isConnected && !onBsc && (
+                  <div
+                    className="rounded-2xl p-3 text-xs text-white/80 mb-3 flex items-center justify-between gap-3"
+                    style={{ background: "rgba(255,209,102,0.08)", border: "1px solid rgba(255,209,102,0.3)" }}
+                  >
+                    <span>{zh ? "请切换到 BSC 主网" : "Switch to BSC (chainId 56) to trade."}</span>
+                    <button
+                      onClick={() => switchChain({ chainId: BSC_CHAIN_ID })}
+                      className="trader-action rounded-xl px-3 py-1.5 text-xs font-black"
+                      style={{ color: "#FFD166", borderColor: "rgba(255,209,102,0.4)" }}
+                    >
+                      {zh ? "切到 BSC" : "Switch"}
+                    </button>
+                  </div>
+                )}
+
+                {!tradePick ? (
+                  <button
+                    onClick={handlePickToken}
+                    disabled={tradeStatus === "picking" || tradeStatus === "quoting"}
+                    className="w-full trader-action rounded-2xl py-3 px-4 text-sm font-black disabled:opacity-45"
+                    style={{ color: "#FFD166", borderColor: "rgba(255,209,102,0.35)" }}
+                  >
+                    {tradeStatus === "picking"
+                      ? zh ? "宠物正在扫 four.meme 榜单…" : "Scanning four.meme..."
+                      : tradeStatus === "quoting"
+                      ? zh ? "Helper3 报价中…" : "Quoting via Helper3..."
+                      : zh ? "🐾 让宠物挑一个 token" : "🐾 Let pet pick a token"}
+                  </button>
+                ) : (
+                  <div className="space-y-3">
+                    <div
+                      className="rounded-2xl p-4 flex items-start gap-3"
+                      style={{ background: "rgba(0,255,170,0.06)", border: "1px solid rgba(0,255,170,0.22)" }}
+                    >
+                      {tradePick.img && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={tradePick.img}
+                          alt={tradePick.symbol}
+                          className="w-12 h-12 rounded-full flex-shrink-0"
+                          style={{ border: "1px solid rgba(255,255,255,0.1)" }}
+                        />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-black text-white text-base">${tradePick.symbol}</span>
+                          <span className="text-xs text-white/60 truncate">{tradePick.name}</span>
+                          <span
+                            className="text-[11px] font-black font-signal px-2 py-0.5 rounded"
+                            style={{
+                              color: tradePick.day1Increase >= 0 ? "#00FFAA" : "#FF6B6B",
+                              background:
+                                tradePick.day1Increase >= 0
+                                  ? "rgba(0,255,170,0.1)"
+                                  : "rgba(255,107,107,0.1)",
+                            }}
+                          >
+                            {tradePick.day1Increase >= 0 ? "+" : ""}
+                            {tradePick.day1Increase.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="text-[11px] mt-1 text-white/62 leading-relaxed">
+                          <span className="font-black text-white/40 mr-1.5">
+                            {zh ? "理由：" : "Why:"}
+                          </span>
+                          {zh ? tradePick.reasonZh : tradePick.reason}
+                        </div>
+                        <div className="text-[10px] mt-1 text-white/32 font-signal">
+                          {zh ? "曲线" : "curve"} {tradePick.progress.toFixed(0)}% · {tradePick.holders} {zh ? "持有者" : "holders"} ·{" "}
+                          <a
+                            href={`https://bscscan.com/token/${tradePick.address}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline decoration-dotted"
+                          >
+                            {tradePick.address.slice(0, 6)}...{tradePick.address.slice(-4)}
+                          </a>
+                        </div>
+                        {tradeQuote && (
+                          <div className="text-[11px] mt-2 font-black" style={{ color: "#00FFAA" }}>
+                            {zh ? "预计" : "Estimate"}: {tradeFunds} BNB → ~{Math.round(tradeQuote.estimatedTokens).toLocaleString()} ${tradePick.symbol}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <p className="text-sm mt-2 leading-relaxed text-white/52">{petState.personality}</p>
-                  </div>
-                  <div className="rounded-2xl p-3"
-                    style={{ background: "rgba(255,255,255,0.045)", border: "1px solid rgba(255,255,255,0.08)" }}>
-                    <div className="text-[10px] font-black font-signal text-white/30">ON-CHAIN</div>
-                    <div className="text-sm font-black mt-1" style={{ color: petState.agentId != null ? "#00FFAA" : "rgba(255,255,255,0.56)" }}>
-                      {petState.agentId != null ? `Agent #${petState.agentId}` : (zh ? "待铸造" : "Not minted yet")}
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={handleExecuteBuy}
+                        disabled={!isConnected || !onBsc || tradeStatus === "awaiting-signature" || tradeStatus === "confirming" || tradeStatus === "approving"}
+                        className="trader-action rounded-2xl py-3 px-3 text-sm font-black disabled:opacity-45"
+                        style={{ color: "#00FFAA", borderColor: "rgba(0,255,170,0.35)" }}
+                      >
+                        {tradeStatus === "awaiting-signature"
+                          ? zh ? "钱包签名中…" : "Sign in wallet..."
+                          : tradeStatus === "confirming"
+                          ? zh ? "等待确认…" : "Confirming..."
+                          : !isConnected
+                          ? zh ? "先连钱包" : "Connect wallet"
+                          : !onBsc
+                          ? zh ? "切到 BSC" : "Switch to BSC"
+                          : zh ? `用 ${tradeFunds} BNB 买入` : `Buy with ${tradeFunds} BNB`}
+                      </button>
+                      <button
+                        onClick={handleExecuteSell}
+                        disabled={!isConnected || !onBsc || tradeStatus === "awaiting-signature" || tradeStatus === "confirming" || tradeStatus === "approving"}
+                        className="trader-action rounded-2xl py-3 px-3 text-sm font-black disabled:opacity-45"
+                        style={{ color: "#00D4FF", borderColor: "rgba(0,212,255,0.35)" }}
+                      >
+                        {tradeStatus === "approving"
+                          ? zh ? "授权中…" : "Approving..."
+                          : zh ? "清仓卖出" : "Sell all"}
+                      </button>
+                      <button
+                        onClick={handlePickToken}
+                        disabled={tradeStatus === "picking" || tradeStatus === "quoting" || tradeStatus === "awaiting-signature" || tradeStatus === "confirming"}
+                        className="trader-action rounded-2xl py-3 px-3 text-sm font-black disabled:opacity-45 col-span-2"
+                        style={{ color: "#A78BFA", borderColor: "rgba(167,139,250,0.3)" }}
+                      >
+                        {zh ? "换一个 token" : "Pick another token"}
+                      </button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 mt-auto">
-                    <button onClick={handleFeedMarket} disabled={feedingMarket || sending}
-                      className="trader-action rounded-2xl py-3 px-3 text-sm font-black disabled:opacity-45"
-                      style={{ color: "#00FFAA", borderColor: "rgba(0,255,170,0.25)" }}>
-                      {feedingMarket ? (zh ? "喂养中" : "Feeding") : (zh ? "喂市场" : "Feed")}
-                    </button>
-                    <button onClick={() => startChat()}
-                      className="trader-action rounded-2xl py-3 px-3 text-sm font-black"
-                      style={{ color: accentColor, borderColor: `${accentColor}40` }}>
-                      {zh ? "小对话" : "Chat"}
-                    </button>
-                    <button onClick={() => setShowMintModal(true)} disabled={registering || sending || petState.agentId != null}
-                      className="trader-action rounded-2xl py-3 px-3 text-sm font-black disabled:opacity-35"
-                      style={{ color: "#FFD166", borderColor: "rgba(255,209,102,0.25)" }}>
-                      {petState.agentId != null ? (zh ? "已上链" : "Minted") : (zh ? "铸造" : "Mint")}
-                    </button>
-                    <button onClick={() => setShowShareCard(true)}
-                      className="trader-action rounded-2xl py-3 px-3 text-sm font-black"
-                      style={{ color: "#00D4FF", borderColor: "rgba(0,212,255,0.25)" }}>
-                      {zh ? "分享" : "Share"}
-                    </button>
+                )}
+
+                {tradeError && (
+                  <div
+                    className="mt-3 rounded-2xl p-3 text-xs leading-relaxed break-all"
+                    style={{ background: "rgba(255,107,107,0.08)", border: "1px solid rgba(255,107,107,0.28)", color: "#FF9999" }}
+                  >
+                    {tradeError}
                   </div>
+                )}
+
+                {tradeResult && (
+                  <div
+                    className="mt-3 rounded-2xl p-3 text-xs leading-relaxed flex items-center justify-between gap-3"
+                    style={{ background: "rgba(0,255,170,0.08)", border: "1px solid rgba(0,255,170,0.28)", color: "#AAFFD5" }}
+                  >
+                    <div>
+                      <div className="font-black text-white">
+                        {tradeResult.action === "buy"
+                          ? zh
+                            ? `在 BSC 上买入 $${tradeResult.symbol} 已广播 🎉`
+                            : `Buy ${tradeResult.symbol} broadcast on BSC 🎉`
+                          : zh
+                          ? `在 BSC 上卖出 $${tradeResult.symbol} 已广播 🎉`
+                          : `Sell ${tradeResult.symbol} broadcast on BSC 🎉`}
+                      </div>
+                      <div className="text-[10px] font-signal mt-0.5 opacity-70">
+                        {tradeResult.status === "success"
+                          ? zh ? "已上链确认" : "confirmed"
+                          : tradeResult.status === "pending"
+                          ? zh ? "等待确认…" : "pending confirmation"
+                          : zh ? "回滚" : "reverted"}
+                      </div>
+                    </div>
+                    <a
+                      href={tradeResult.bscScanUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex-shrink-0 trader-action rounded-xl px-3 py-2 text-xs font-black"
+                      style={{ color: "#00FFAA", borderColor: "rgba(0,255,170,0.4)" }}
+                    >
+                      BscScan →
+                    </a>
+                  </div>
+                )}
+
+                <div className="mt-3 text-[10px] text-white/32 font-signal">
+                  {zh
+                    ? "交易由你自己的钱包签 · 0.001 BNB / 次（上限 0.005）· 此非投资建议"
+                    : "You sign from your wallet · 0.001 BNB/trade (cap 0.005) · Not financial advice"}
                 </div>
               </div>
+
+              {/* ── Agent Actions Log (tool-use timeline) ──────────── */}
+              <div className="trader-terminal rounded-[28px] p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-xs font-black font-signal tracking-[0.18em]" style={{ color: "#A78BFA" }}>
+                    {zh ? "AGENT 调用日志" : "AGENT ACTIONS"}
+                  </div>
+                  <span className="text-[10px] font-signal text-white/40">
+                    {agentActions.length} {zh ? "条" : "calls"}
+                  </span>
+                </div>
+                {agentActions.length === 0 ? (
+                  <div className="text-xs text-white/40 font-signal">
+                    {zh
+                      ? "还没有工具调用 —— 让宠物挑币、喂市场或聊天就会开始记录。"
+                      : "No tool calls yet — pick a token, feed the market, or chat to start the log."}
+                  </div>
+                ) : (
+                  <ul className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                    {agentActions.map((a) => {
+                      const color = a.status === "error" ? "#FF6B6B" : a.status === "pending" ? "#FFD166" : "#00FFAA";
+                      return (
+                        <li
+                          key={a.id}
+                          className="rounded-xl px-3 py-2 text-[11px] leading-relaxed flex items-start gap-2"
+                          style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}
+                        >
+                          <span
+                            className="font-signal font-black text-[10px] flex-shrink-0 mt-[1px]"
+                            style={{ color }}
+                          >
+                            {a.status === "error" ? "✕" : a.status === "pending" ? "⋯" : "✓"}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-baseline gap-2 flex-wrap">
+                              <span className="font-black font-signal" style={{ color: "#A78BFA" }}>
+                                {a.tool}
+                              </span>
+                              <span className="text-white/30 text-[9px] font-signal">
+                                {new Date(a.timestamp).toLocaleTimeString()}
+                              </span>
+                            </div>
+                            <div className="text-white/72 mt-0.5 break-words">{a.summary}</div>
+                            {a.txHash && (
+                              <a
+                                href={`https://bscscan.com/tx/${a.txHash}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] underline decoration-dotted"
+                                style={{ color: "#00FFAA" }}
+                              >
+                                {a.txHash.slice(0, 10)}...{a.txHash.slice(-6)} ↗
+                              </a>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+
             </section>
+          </div>
+          }  {/* end currentPage === "home" */}
           </div>
         </main>
 
@@ -1068,6 +2084,22 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
                 </div>
               )}
               <div ref={bottomRef} />
+            </div>
+
+            {/* Quick-reply buttons */}
+            <div className="px-3 pt-2 pb-1 flex flex-wrap gap-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              {[
+                { icon: "🔥", label: "Hot Today", labelZh: "今日热榜", action: () => handleTodayRankings(), color: "#ff9340", bg: "rgba(255,107,0,0.12)" },
+                { icon: "📡", label: "Market Pulse", labelZh: "市场脉搏", action: () => handleMarketPulse(), color: "#00D4FF", bg: "rgba(0,212,255,0.1)" },
+                { icon: "✅", label: "Check In", labelZh: "每日打卡", action: () => { setChatStarted(true); sendMessage(zh ? "我今天完成了打卡！" : "I completed my daily check-in!"); }, color: "rgba(255,255,255,0.75)", bg: "rgba(255,255,255,0.06)" },
+                { icon: "📊", label: "My Patterns", labelZh: "行为分析", action: () => startChat(zh ? "分析一下我最近的交易行为？" : "Analyze my recent trading behavior."), color: "#a78bfa", bg: "rgba(139,92,246,0.12)" },
+              ].map((b) => (
+                <button key={b.label} onClick={b.action} disabled={sending}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-black disabled:opacity-40 transition-all"
+                  style={{ background: b.bg, color: b.color, border: `1px solid ${b.color}44` }}>
+                  {b.icon} {zh ? b.labelZh : b.label}
+                </button>
+              ))}
             </div>
 
             <div className="px-3 py-3"
@@ -1319,6 +2351,14 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
             className="trader-action text-xs font-bold px-3 py-1.5 rounded-xl transition-all hover:opacity-90"
             style={{ color: accentColor, borderColor: `${accentColor}44` }}>
             📤 Share
+          </button>
+          <button
+            onClick={() => setMinimized(true)}
+            title="Minimize to corner / 缩小到角落"
+            className="trader-action text-xs font-bold px-3 py-1.5 rounded-xl transition-all hover:opacity-90"
+            style={{ color: "rgba(255,255,255,0.45)", borderColor: "rgba(255,255,255,0.12)" }}
+          >
+            🪟 Float
           </button>
           <button onClick={onReset} title="Reset / 重置"
             className="text-xs px-2 py-1 rounded-lg transition-all hover:opacity-60"
@@ -1815,6 +2855,22 @@ export default function PetDashboard({ petState, onStateUpdate, onReset }: Props
                   </div>
                 )}
                 <div ref={bottomRef} />
+              </div>
+
+              {/* Quick-reply buttons */}
+              <div className="px-3 pt-2 pb-1 flex flex-wrap gap-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                {[
+                  { icon: "🔥", label: "Hot Today", labelZh: "今日热榜", action: () => handleTodayRankings(), color: "#ff9340", bg: "rgba(255,107,0,0.12)" },
+                  { icon: "📡", label: "Market Pulse", labelZh: "市场脉搏", action: () => handleMarketPulse(), color: "#00D4FF", bg: "rgba(0,212,255,0.1)" },
+                  { icon: "✅", label: "Check In", labelZh: "每日打卡", action: () => { setChatStarted(true); sendMessage(petState.lang === "zh" ? "我今天完成了打卡！" : "I completed my daily check-in!"); }, color: "rgba(255,255,255,0.75)", bg: "rgba(255,255,255,0.06)" },
+                  { icon: "📊", label: "My Patterns", labelZh: "行为分析", action: () => startChat(petState.lang === "zh" ? "分析一下我最近的交易行为？" : "Analyze my recent trading behavior."), color: "#a78bfa", bg: "rgba(139,92,246,0.12)" },
+                ].map((b) => (
+                  <button key={b.label} onClick={b.action} disabled={sending}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-black disabled:opacity-40 transition-all"
+                    style={{ background: b.bg, color: b.color, border: `1px solid ${b.color}44` }}>
+                    {b.icon} {petState.lang === "zh" ? b.labelZh : b.label}
+                  </button>
+                ))}
               </div>
 
               <div className="px-3 py-3"

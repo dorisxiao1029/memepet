@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import Providers from "./providers";
 
 export const metadata: Metadata = {
   title: "MemePet — Your On-Chain Trading Companion",
@@ -13,7 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full">
-      <body className="min-h-full flex flex-col font-nunito">{children}</body>
+      <body className="min-h-full flex flex-col font-nunito">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }
